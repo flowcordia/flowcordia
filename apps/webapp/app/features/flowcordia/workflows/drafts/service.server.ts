@@ -1,0 +1,531 @@
+import { randomUUID } from "node:crypto";
+import { workflowSha256 } from "@flowcordia/control-plane";
+import {
+  compileWorkflowToTriggerTask,
+  createPreviewRuntimeAdapters,
+  executeFlowcordiaWorkflow,
+  type FlowcordiaExecutionResult,
+} from "@flowcordia/runtime";
+import {
+  addWorkflowFunctionNode,
+  applyWorkflowEdit,
+  analyzeFlowcordiaWorkflowDependencyGraph,
+  bindFlowcordiaSubflowNodeContract,
+  collectFlowcordiaSubflowWorkflowIds,
+  parseFlowcordiaSubflowConfiguration,
+  pasteWorkflowSubgraph,
+  resolveWorkflowFunctionFixture,
+  validateFlowcordiaSubflowContractBindings,
+  type JsonValue,
+  type WorkflowDefinition,
+} from "@flowcordia/workflow";
+import { createWorkflowIndexGitHubGateway } from "../index/github.server";
+import { getWorkflowIndexEntry, listWorkflowIndexEntries } from "../index/repository.server";
+import type { WorkflowIndexEntryRecord } from "../index/types";
+import { WorkflowDraftError } from "./errors";
+import {
+  createOrResumeWorkflowDraft,
+  discardWorkflowDraft,
+  getActiveWorkflowDraft,
+  getActiveWorkflowDraftByPublicId,
+  restoreWorkflowDraftHistory as restoreWorkflowDraftHistoryRecord,
+  updateWorkflowDraft,
+} from "./repository.server";
+import type { WorkflowDraftHistoryDirection } from "./history";
+import type { WorkflowDraftEditCommand, WorkflowDraftRecord, WorkflowDraftScope } from "./types";
+import { summarizeWorkflowEdit } from "./types";
+
+function assertValidIndexEntry(entry: WorkflowIndexEntryRecord | null): WorkflowIndexEntryRecord {
+  if (!entry || entry.status !== "VALID" || !entry.canonicalSha256) {
+    throw new WorkflowDraftError(
+      "draft_not_found",
+      "A valid indexed workflow is required before Studio can create a draft."
+    );
+  }
+  return entry;
+}
+
+function matchesBase(draft: WorkflowDraftRecord, entry: WorkflowIndexEntryRecord): boolean {
+  return (
+    entry.status === "VALID" &&
+    entry.canonicalSha256 !== null &&
+    draft.workflowId === entry.workflowId &&
+    draft.workflowPath === entry.workflowPath &&
+    draft.baseCommitSha === entry.sourceCommitSha &&
+    draft.baseBlobSha === entry.sourceBlobSha &&
+    draft.baseCanonicalSha256 === entry.canonicalSha256
+  );
+}
+
+export function isWorkflowDraftStale(
+  draft: WorkflowDraftRecord,
+  entry: WorkflowIndexEntryRecord | null
+): boolean {
+  return !entry || !matchesBase(draft, entry);
+}
+
+async function readExactIndexedWorkflow(
+  scope: WorkflowDraftScope,
+  entry: WorkflowIndexEntryRecord
+) {
+  const { workflowStore } = await createWorkflowIndexGitHubGateway(scope);
+  const result = await workflowStore.read({
+    scope,
+    workflowId: entry.workflowId,
+    revision: entry.sourceCommitSha,
+  });
+  if (!result.success) {
+    throw new WorkflowDraftError(
+      result.error.retryable ? "draft_unavailable" : "stale_source",
+      result.error.retryable
+        ? "The indexed workflow source is temporarily unavailable."
+        : "The indexed workflow source can no longer be proven against GitHub.",
+      result.error.retryable
+    );
+  }
+  if (
+    result.value.source.commitSha !== entry.sourceCommitSha ||
+    result.value.source.blobSha !== entry.sourceBlobSha ||
+    result.value.source.path !== entry.workflowPath ||
+    result.value.workflow.id !== entry.workflowId ||
+    workflowSha256(result.value.workflow) !== entry.canonicalSha256
+  ) {
+    throw new WorkflowDraftError(
+      "stale_source",
+      "The indexed workflow no longer matches its exact GitHub source identity. Synchronize before editing."
+    );
+  }
+  return result.value.workflow;
+}
+
+export async function getWorkflowDraftForStudio(input: {
+  scope: WorkflowDraftScope;
+  workflowId: string;
+}): Promise<{ draft: WorkflowDraftRecord | null; stale: boolean }> {
+  const [draft, entry] = await Promise.all([
+    getActiveWorkflowDraft(input.scope, input.workflowId),
+    getWorkflowIndexEntry(input.scope, input.workflowId),
+  ]);
+  return { draft, stale: draft ? isWorkflowDraftStale(draft, entry) : false };
+}
+
+export async function startWorkflowDraft(input: {
+  scope: WorkflowDraftScope;
+  workflowId: string;
+  actorId: string;
+  correlationId?: string;
+}): Promise<{ draft: WorkflowDraftRecord; created: boolean; stale: boolean }> {
+  const correlationId = input.correlationId ?? randomUUID();
+  const existing = await getActiveWorkflowDraft(input.scope, input.workflowId);
+  if (existing) {
+    const entry = await getWorkflowIndexEntry(input.scope, input.workflowId);
+    const resumed = await createOrResumeWorkflowDraft({
+      scope: input.scope,
+      source: {
+        workflowId: existing.workflowId,
+        workflowPath: existing.workflowPath,
+        baseCommitSha: existing.baseCommitSha,
+        baseBlobSha: existing.baseBlobSha,
+        baseCanonicalSha256: existing.baseCanonicalSha256,
+      },
+      workflow: existing.document,
+      actorId: input.actorId,
+      correlationId,
+    });
+    return { ...resumed, stale: isWorkflowDraftStale(resumed.draft, entry) };
+  }
+
+  const entry = assertValidIndexEntry(await getWorkflowIndexEntry(input.scope, input.workflowId));
+  const workflow = await readExactIndexedWorkflow(input.scope, entry);
+  const result = await createOrResumeWorkflowDraft({
+    scope: input.scope,
+    source: {
+      workflowId: entry.workflowId,
+      workflowPath: entry.workflowPath,
+      baseCommitSha: entry.sourceCommitSha,
+      baseBlobSha: entry.sourceBlobSha,
+      baseCanonicalSha256: entry.canonicalSha256!,
+    },
+    workflow,
+    actorId: input.actorId,
+    correlationId,
+  });
+  return { ...result, stale: false };
+}
+
+export async function editWorkflowDraft(input: {
+  scope: WorkflowDraftScope;
+  publicId: string;
+  expectedVersion: bigint;
+  command: WorkflowDraftEditCommand;
+  actorId: string;
+  correlationId?: string;
+}): Promise<WorkflowDraftRecord> {
+  const draft = await getActiveWorkflowDraftByPublicId(input.scope, input.publicId);
+  if (!draft) {
+    throw new WorkflowDraftError("draft_not_found", "The active workflow draft was not found.");
+  }
+  const entry = await getWorkflowIndexEntry(input.scope, draft.workflowId);
+  if (!entry || !matchesBase(draft, entry)) {
+    throw new WorkflowDraftError(
+      "stale_source",
+      "The repository workflow changed after this draft started. Discard the draft and start from the latest source."
+    );
+  }
+  let edited;
+  const configuredNode =
+    input.command.type === "set_node_configuration"
+      ? draft.document.nodes.find((node) => node.id === input.command.nodeId)
+      : undefined;
+  if (
+    input.command.type === "set_node_configuration" &&
+    configuredNode?.operation === "subflow.invoke"
+  ) {
+    const parsed = parseFlowcordiaSubflowConfiguration(input.command.configuration);
+    if (!parsed.success) {
+      throw new WorkflowDraftError(
+        "unsupported_edit",
+        parsed.issues[0]?.message ?? "The subflow configuration is invalid."
+      );
+    }
+    const target = await getWorkflowIndexEntry(input.scope, parsed.configuration.workflowId);
+    if (
+      !target ||
+      target.status !== "VALID" ||
+      target.sourceCommitSha !== draft.baseCommitSha ||
+      target.callableContractMetadataVersion !== 1 ||
+      target.callableContractState !== "READY" ||
+      !target.callableInputSchema ||
+      !target.callableOutputSchema
+    ) {
+      throw new WorkflowDraftError(
+        "unsupported_edit",
+        target?.callableFailureMessage ??
+          "The selected child workflow does not expose a ready callable contract at this draft revision."
+      );
+    }
+    edited = bindFlowcordiaSubflowNodeContract({
+      workflow: draft.document,
+      nodeId: input.command.nodeId,
+      configuration: input.command.configuration,
+      contract: {
+        version: 1,
+        inputSchema: target.callableInputSchema,
+        outputSchema: target.callableOutputSchema,
+      },
+    });
+  } else if (input.command.type === "paste_subgraph") {
+    const sourceDraft = await getActiveWorkflowDraftByPublicId(
+      input.scope,
+      input.command.sourceDraftPublicId
+    );
+    if (!sourceDraft || sourceDraft.workflowId !== input.command.sourceWorkflowId) {
+      throw new WorkflowDraftError(
+        "draft_not_found",
+        "The copied source draft is no longer available. Copy the nodes again before pasting."
+      );
+    }
+    if (
+      sourceDraft.version !== BigInt(input.command.sourceDraftVersion) ||
+      sourceDraft.documentSha256 !== input.command.sourceDocumentSha256
+    ) {
+      throw new WorkflowDraftError(
+        "draft_conflict",
+        "The copied source workflow changed after these nodes were copied. Copy them again before pasting."
+      );
+    }
+    const sourceEntry = await getWorkflowIndexEntry(input.scope, sourceDraft.workflowId);
+    if (!sourceEntry || !matchesBase(sourceDraft, sourceEntry)) {
+      throw new WorkflowDraftError(
+        "stale_source",
+        "The copied source workflow is stale. Synchronize it and copy the nodes again."
+      );
+    }
+    if (sourceDraft.baseCommitSha !== draft.baseCommitSha) {
+      throw new WorkflowDraftError(
+        "stale_source",
+        "Source and target workflows must come from the same repository revision. Synchronize both workflows and copy again."
+      );
+    }
+    edited = pasteWorkflowSubgraph({
+      target: draft.document,
+      source: sourceDraft.document,
+      nodeIds: input.command.nodeIds,
+      offset: input.command.offset,
+    });
+  } else if (input.command.type === "add_function_node") {
+    const { functionCatalog } = await createWorkflowIndexGitHubGateway(input.scope);
+    const catalog = await functionCatalog.read({
+      scope: input.scope,
+      revision: draft.baseCommitSha,
+    });
+    if (!catalog.success) {
+      throw new WorkflowDraftError(
+        catalog.error.retryable ? "draft_unavailable" : "unsupported_edit",
+        catalog.error.catalogIssues?.[0]?.message ?? catalog.error.message,
+        catalog.error.retryable
+      );
+    }
+    if (
+      catalog.value.source.requestedRevision !== draft.baseCommitSha ||
+      catalog.value.source.commitSha !== draft.baseCommitSha
+    ) {
+      throw new WorkflowDraftError(
+        "stale_source",
+        "The function catalog could not be proven against this draft's exact repository revision."
+      );
+    }
+    const definition = catalog.value.catalog.functions.find(
+      (candidate) => candidate.id === input.command.functionId
+    );
+    if (!definition) {
+      throw new WorkflowDraftError(
+        "unsupported_edit",
+        `Function "${input.command.functionId}" is not available at this draft's repository revision.`
+      );
+    }
+    edited = addWorkflowFunctionNode(
+      draft.document,
+      definition,
+      input.command.position,
+      input.command.name
+    );
+  } else {
+    edited = applyWorkflowEdit(draft.document, input.command);
+  }
+  if (!edited.success) {
+    throw new WorkflowDraftError("unsupported_edit", edited.message);
+  }
+  if (configuredNode?.operation === "subflow.invoke" || input.command.type === "paste_subgraph") {
+    await assertWorkflowDocumentDependencies(input.scope, edited.workflow, draft.baseCommitSha);
+  }
+  return updateWorkflowDraft({
+    scope: input.scope,
+    publicId: input.publicId,
+    expectedVersion: input.expectedVersion,
+    workflow: edited.workflow,
+    actorId: input.actorId,
+    correlationId: input.correlationId ?? randomUUID(),
+    commandSummary: summarizeWorkflowEdit(input.command),
+  });
+}
+
+export async function restoreWorkflowDraftHistory(input: {
+  scope: WorkflowDraftScope;
+  publicId: string;
+  expectedVersion: bigint;
+  direction: WorkflowDraftHistoryDirection;
+  actorId: string;
+  correlationId?: string;
+}): Promise<WorkflowDraftRecord> {
+  const draft = await getActiveWorkflowDraftByPublicId(input.scope, input.publicId);
+  if (!draft) {
+    throw new WorkflowDraftError("draft_not_found", "The active workflow draft was not found.");
+  }
+  const entry = await getWorkflowIndexEntry(input.scope, draft.workflowId);
+  if (!entry || !matchesBase(draft, entry)) {
+    throw new WorkflowDraftError(
+      "stale_source",
+      "The repository workflow changed after this draft started. Discard the draft and start from the latest source."
+    );
+  }
+  return restoreWorkflowDraftHistoryRecord({
+    scope: input.scope,
+    publicId: input.publicId,
+    expectedVersion: input.expectedVersion,
+    direction: input.direction,
+    actorId: input.actorId,
+    correlationId: input.correlationId ?? randomUUID(),
+  });
+}
+
+async function assertWorkflowDocumentDependencies(
+  scope: WorkflowDraftScope,
+  workflow: WorkflowDefinition,
+  sourceCommitSha: string
+): Promise<void> {
+  const entries = await listWorkflowIndexEntries(scope);
+  const analysis = analyzeFlowcordiaWorkflowDependencyGraph({
+    rootWorkflowId: workflow.id,
+    sourceCommitSha,
+    rootSubflowWorkflowIds: collectFlowcordiaSubflowWorkflowIds(workflow),
+    entries: entries.map((entry) => ({
+      workflowId: entry.workflowId,
+      status: entry.status,
+      sourceCommitSha: entry.sourceCommitSha,
+      dependencyMetadataVersion: entry.dependencyMetadataVersion,
+      subflowWorkflowIds: entry.subflowWorkflowIds,
+    })),
+  });
+  if (!analysis.success) {
+    throw new WorkflowDraftError(
+      "compilation_failed",
+      analysis.issues[0]?.message ?? "The subflow dependency graph is not safe to publish."
+    );
+  }
+  const contractIssue = validateFlowcordiaSubflowContractBindings({
+    workflow,
+    sourceCommitSha,
+    entries,
+  })[0];
+  if (contractIssue) {
+    throw new WorkflowDraftError("compilation_failed", contractIssue.message);
+  }
+}
+
+async function assertWorkflowDraftDependencies(
+  scope: WorkflowDraftScope,
+  draft: WorkflowDraftRecord
+): Promise<void> {
+  await assertWorkflowDocumentDependencies(scope, draft.document, draft.baseCommitSha);
+}
+
+export async function getPublishableWorkflowDraft(input: {
+  scope: WorkflowDraftScope;
+  publicId: string;
+  expectedVersion: bigint;
+}): Promise<WorkflowDraftRecord> {
+  const draft = await getActiveWorkflowDraftByPublicId(input.scope, input.publicId);
+  if (!draft) {
+    throw new WorkflowDraftError("draft_not_found", "The active workflow draft was not found.");
+  }
+  if (draft.version !== input.expectedVersion) {
+    throw new WorkflowDraftError(
+      "draft_conflict",
+      "The workflow draft changed in another session. Refresh before publishing it."
+    );
+  }
+  const entry = await getWorkflowIndexEntry(input.scope, draft.workflowId);
+  if (!entry || !matchesBase(draft, entry)) {
+    throw new WorkflowDraftError(
+      "stale_source",
+      "The repository workflow changed after this draft started. Restart from the latest source before publishing."
+    );
+  }
+  if (draft.documentSha256 === draft.baseCanonicalSha256) {
+    throw new WorkflowDraftError(
+      "no_changes",
+      "This draft has no changes to publish. Edit the workflow before creating a proposal."
+    );
+  }
+  await assertWorkflowDraftDependencies(input.scope, draft);
+  const compilation = compileWorkflowToTriggerTask(draft.document);
+  if (!compilation.success) {
+    throw new WorkflowDraftError(
+      "compilation_failed",
+      compilation.issues[0]?.message ?? "The draft cannot be compiled safely yet."
+    );
+  }
+  return draft;
+}
+
+async function resolveWorkflowFixtureMock(input: {
+  scope: WorkflowDraftScope;
+  draft: WorkflowDraftRecord;
+  payload: JsonValue;
+  nodeId: string;
+  fixtureId: string;
+}): Promise<JsonValue> {
+  const node = input.draft.document.nodes.find((candidate) => candidate.id === input.nodeId);
+  if (!node) {
+    throw new WorkflowDraftError(
+      "invalid_input",
+      "The selected fixture target is not a repository function node."
+    );
+  }
+  const { functionCatalog } = await createWorkflowIndexGitHubGateway(input.scope);
+  const catalog = await functionCatalog.read({
+    scope: input.scope,
+    revision: input.draft.baseCommitSha,
+  });
+  if (!catalog.success) {
+    throw new WorkflowDraftError(
+      catalog.error.retryable ? "draft_unavailable" : "invalid_input",
+      catalog.error.catalogIssues?.[0]?.message ?? catalog.error.message,
+      catalog.error.retryable
+    );
+  }
+  if (
+    catalog.value.source.requestedRevision !== input.draft.baseCommitSha ||
+    catalog.value.source.commitSha !== input.draft.baseCommitSha
+  ) {
+    throw new WorkflowDraftError(
+      "stale_source",
+      "The fixture catalog could not be proven against this draft's exact repository revision."
+    );
+  }
+  const resolution = resolveWorkflowFunctionFixture({
+    catalog: catalog.value.catalog,
+    node,
+    fixtureId: input.fixtureId,
+    payload: input.payload,
+  });
+  if (!resolution.success) {
+    throw new WorkflowDraftError("invalid_input", resolution.message);
+  }
+  return resolution.mockOutput;
+}
+
+export async function previewWorkflowDraft(input: {
+  scope: WorkflowDraftScope;
+  publicId: string;
+  expectedVersion: bigint;
+  payload: JsonValue;
+  fixture?: { nodeId: string; fixtureId: string };
+}): Promise<FlowcordiaExecutionResult> {
+  const draft = await getPublishableWorkflowDraft(input).catch((error) => {
+    if (error instanceof WorkflowDraftError && error.code === "no_changes") {
+      return getActiveWorkflowDraftByPublicId(input.scope, input.publicId).then((current) => {
+        if (!current || current.version !== input.expectedVersion) throw error;
+        return current;
+      });
+    }
+    throw error;
+  });
+  if (!draft) {
+    throw new WorkflowDraftError("draft_not_found", "The active workflow draft was not found.");
+  }
+  await assertWorkflowDraftDependencies(input.scope, draft);
+  const fixtureMock = input.fixture
+    ? await resolveWorkflowFixtureMock({
+        scope: input.scope,
+        draft,
+        payload: input.payload,
+        nodeId: input.fixture.nodeId,
+        fixtureId: input.fixture.fixtureId,
+      })
+    : undefined;
+  const result = await executeFlowcordiaWorkflow(
+    draft.document,
+    input.payload,
+    createPreviewRuntimeAdapters({
+      ...(input.fixture && fixtureMock !== undefined
+        ? { codeMocks: { [input.fixture.nodeId]: fixtureMock } }
+        : {}),
+    }),
+    { maxNodes: 100 }
+  );
+  if (!result.success && result.failedNodeId === "workflow") {
+    throw new WorkflowDraftError(
+      "compilation_failed",
+      result.traces[0]?.message ?? "The workflow cannot be tested safely."
+    );
+  }
+  return result;
+}
+
+export async function discardActiveWorkflowDraft(input: {
+  scope: WorkflowDraftScope;
+  publicId: string;
+  expectedVersion: bigint;
+  actorId: string;
+  correlationId?: string;
+}): Promise<WorkflowDraftRecord> {
+  return discardWorkflowDraft({
+    scope: input.scope,
+    publicId: input.publicId,
+    expectedVersion: input.expectedVersion,
+    actorId: input.actorId,
+    correlationId: input.correlationId ?? randomUUID(),
+  });
+}

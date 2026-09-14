@@ -1,0 +1,915 @@
+import { getDotPath } from "@flowcordia/foundation";
+import {
+  FLOWCORDIA_ACTIVEPIECES_ACTION_OPERATION,
+  FLOWCORDIA_ACTIVEPIECES_TRIGGER_OPERATION,
+  applyFlowcordiaMapping,
+  createWorkflowFunctionPreviewValue,
+  flowcordiaSubflowTaskId,
+  formatWorkflowFunctionValuePath,
+  parseFlowcordiaActivepiecesPieceConfiguration,
+  parseFlowcordiaApprovalConfiguration,
+  parseFlowcordiaApprovalResult,
+  parseFlowcordiaHttpConfiguration,
+  parseFlowcordiaMappingConfiguration,
+  parseFlowcordiaSubflowConfiguration,
+  parseFlowcordiaWaitConfiguration,
+  validateStudioV2SourceDocument,
+  validateWorkflow,
+  validateWorkflowFunctionValue,
+  type FlowcordiaHttpConfiguration,
+  type JsonObject,
+  type JsonValue,
+  type WorkflowDefinition,
+  type WorkflowNode,
+} from "@flowcordia/workflow";
+import { analyzeWorkflow } from "./analyze.js";
+import { executeFlowcordiaActivepiecesAction } from "./activepieces.js";
+import { executeStudioV2TypeScriptSource } from "./source-runtime.js";
+import type {
+  FlowcordiaExecuteOptions,
+  FlowcordiaExecutionResult,
+  FlowcordiaPreviewRuntimeOptions,
+  FlowcordiaRuntimeAdapters,
+  FlowcordiaTriggerRuntimeOptions,
+} from "./types.js";
+
+function jsonValue(value: unknown): JsonValue {
+  return JSON.parse(JSON.stringify(value ?? null)) as JsonValue;
+}
+
+function conditionMatches(configuration: JsonObject, value: JsonValue): boolean {
+  const selected = getDotPath(value, String(configuration.path ?? ""), {
+    allowRoot: true,
+    allowArrayIndexes: false,
+  });
+  const candidate = selected.found ? selected.value : undefined;
+  switch (configuration.operator) {
+    case "equals":
+      return JSON.stringify(candidate) === JSON.stringify(configuration.value);
+    case "not_equals":
+      return JSON.stringify(candidate) !== JSON.stringify(configuration.value);
+    case "exists":
+      return candidate !== undefined;
+    default:
+      return false;
+  }
+}
+
+function inputForNode(
+  workflow: WorkflowDefinition,
+  node: WorkflowNode,
+  payload: JsonValue,
+  outputs: ReadonlyMap<string, JsonValue>
+): JsonValue {
+  const sources = workflow.edges
+    .filter((edge) => edge.target === node.id)
+    .map((edge) => edge.source);
+  if (sources.length === 0) return payload;
+  if (sources.length === 1) return outputs.get(sources[0]!) ?? null;
+  return Object.fromEntries(sources.map((source) => [source, outputs.get(source) ?? null]));
+}
+
+function shouldExecute(
+  workflow: WorkflowDefinition,
+  node: WorkflowNode,
+  executed: ReadonlySet<string>,
+  branchOutcomes: ReadonlyMap<string, boolean>
+): boolean {
+  const incoming = workflow.edges.filter((edge) => edge.target === node.id);
+  if (incoming.length === 0) return true;
+  return incoming.some((edge) => {
+    if (!executed.has(edge.source)) return false;
+    if (!edge.condition) return true;
+    return edge.condition === String(branchOutcomes.get(edge.source));
+  });
+}
+
+function activepiecesSampleData(
+  workflowInput: JsonValue,
+  outputs: ReadonlyMap<string, JsonValue>
+): JsonObject {
+  return {
+    trigger: { output: workflowInput },
+    ...Object.fromEntries([...outputs].map(([stepName, output]) => [stepName, { output }])),
+  };
+}
+
+function exactExpressionValue(expression: string, sampleData: JsonObject): JsonValue | undefined {
+  const wrapped = expression.match(/^\s*\{\{\s*([^{}]+?)\s*\}\}\s*$/);
+  if (!wrapped?.[1]) return undefined;
+  const selected = getDotPath(sampleData, wrapped[1], {
+    allowRoot: true,
+    allowArrayIndexes: true,
+  });
+  return selected.found ? jsonValue(selected.value) : undefined;
+}
+
+function loopBody(configuration: JsonObject): WorkflowDefinition {
+  const validated = validateWorkflow(configuration.body);
+  if (!validated.success) {
+    throw new Error(validated.issues[0]?.message ?? "The loop body workflow is invalid.");
+  }
+  return validated.workflow;
+}
+
+async function loopItems(input: {
+  configuration: JsonObject;
+  value: JsonValue;
+  workflowInput: JsonValue;
+  outputs: ReadonlyMap<string, JsonValue>;
+  adapters: FlowcordiaRuntimeAdapters;
+}): Promise<JsonValue[]> {
+  const expression = input.configuration.itemsExpression;
+  let candidate: JsonValue | undefined;
+  if (typeof expression === "string") {
+    candidate = input.adapters.evaluateExpression
+      ? await input.adapters.evaluateExpression({
+          expression,
+          workflowInput: input.workflowInput,
+          outputs: Object.fromEntries(input.outputs),
+        })
+      : exactExpressionValue(
+          expression,
+          activepiecesSampleData(input.workflowInput, input.outputs)
+        );
+  } else if (typeof input.configuration.itemsPath === "string") {
+    const selected = getDotPath(input.value, input.configuration.itemsPath, {
+      allowRoot: true,
+      allowArrayIndexes: true,
+    });
+    candidate = selected.found ? jsonValue(selected.value) : undefined;
+  }
+  if (!Array.isArray(candidate)) {
+    throw new Error("Loop items must resolve to a JSON array.");
+  }
+  return candidate;
+}
+
+function assertFunctionBoundary(
+  node: WorkflowNode,
+  boundary: "input" | "output",
+  schema: JsonObject | undefined,
+  value: JsonValue
+) {
+  if (!schema) return;
+  const issue = validateWorkflowFunctionValue(schema, value)[0];
+  if (!issue) return;
+  const subject =
+    node.operation === "subflow.invoke"
+      ? "Subflow"
+      : node.kind === "trigger"
+        ? "Trigger"
+        : node.kind === "output"
+          ? "Output"
+          : "Function";
+  throw new Error(
+    `${subject} ${boundary} failed schema validation at ${formatWorkflowFunctionValuePath(issue.path)}: ${issue.message}`
+  );
+}
+
+async function executeNode(input: {
+  workflow: WorkflowDefinition;
+  node: WorkflowNode;
+  workflowInput: JsonValue;
+  value: JsonValue;
+  outputs: ReadonlyMap<string, JsonValue>;
+  adapters: FlowcordiaRuntimeAdapters;
+  options: FlowcordiaExecuteOptions;
+  recordTrace(trace: FlowcordiaExecutionResult["traces"][number]): Promise<void>;
+}): Promise<JsonValue> {
+  const { workflow, node, workflowInput, value, outputs, adapters, options, recordTrace } = input;
+  switch (node.operation) {
+    case FLOWCORDIA_ACTIVEPIECES_TRIGGER_OPERATION:
+      return value;
+    case FLOWCORDIA_ACTIVEPIECES_ACTION_OPERATION: {
+      const parsed = parseFlowcordiaActivepiecesPieceConfiguration(node);
+      if (!parsed.success) throw new Error(parsed.message);
+      return adapters.activepieces({
+        node,
+        configuration: parsed.configuration,
+        workflowInput,
+        outputs: Object.fromEntries(outputs),
+      });
+    }
+    case "trigger.manual":
+    case "trigger.api":
+    case "trigger.schedule":
+    case "trigger.webhook":
+      assertFunctionBoundary(node, "input", node.outputSchema, value);
+      return value;
+    case "output.return":
+      assertFunctionBoundary(node, "output", node.inputSchema, value);
+      return value;
+    case "action.http":
+      return adapters.http({
+        node,
+        configuration: node.configuration,
+        value,
+        signal: options.signal,
+      });
+    case "data.map": {
+      const parsed = parseFlowcordiaMappingConfiguration(node.configuration);
+      if (!parsed.success) {
+        throw new Error(parsed.issues[0]?.message ?? "Data mapping configuration is invalid.");
+      }
+      const mapped = applyFlowcordiaMapping(parsed.configuration, value);
+      if (!mapped.success) throw new Error(mapped.message);
+      return mapped.value;
+    }
+    case "subflow.invoke": {
+      const parsed = parseFlowcordiaSubflowConfiguration(node.configuration);
+      if (!parsed.success) {
+        throw new Error(parsed.issues[0]?.message ?? "Subflow configuration is invalid.");
+      }
+      const configuration = parsed.configuration;
+      const candidate =
+        configuration.mode === "single"
+          ? value
+          : getDotPath(value, configuration.itemsPath, {
+              allowRoot: true,
+              allowArrayIndexes: true,
+            }).value;
+      const payloads = configuration.mode === "single" ? [candidate ?? null] : candidate;
+      if (!Array.isArray(payloads)) {
+        throw new Error("Batch subflow itemsPath must resolve to a JSON array.");
+      }
+      if (configuration.mode === "batch" && payloads.length > configuration.maxItems) {
+        throw new Error(
+          `Batch subflow input exceeds the configured ${configuration.maxItems}-item limit.`
+        );
+      }
+      for (const payload of payloads) {
+        assertFunctionBoundary(node, "input", node.inputSchema, payload);
+      }
+      if (payloads.length === 0) return [];
+      const subflowOutputs = await adapters.subflow({
+        node,
+        workflowId: configuration.workflowId,
+        payloads,
+      });
+      if (subflowOutputs.length !== payloads.length) {
+        throw new Error("Subflow runtime returned a mismatched result count.");
+      }
+      for (const output of subflowOutputs) {
+        assertFunctionBoundary(node, "output", node.outputSchema, output);
+      }
+      return configuration.mode === "single" ? (subflowOutputs[0] ?? null) : subflowOutputs;
+    }
+    case "approval.human": {
+      const parsed = parseFlowcordiaApprovalConfiguration(node.configuration);
+      if (!parsed.success) {
+        throw new Error(parsed.issues[0]?.message ?? "Approval configuration is invalid.");
+      }
+      const result = await adapters.approval({
+        node,
+        configuration: parsed.configuration,
+        value,
+      });
+      const validated = parseFlowcordiaApprovalResult(result);
+      if (!validated.success) throw new Error(validated.message);
+      return validated.result;
+    }
+    case "control.wait": {
+      const configuration = parseFlowcordiaWaitConfiguration(node.configuration);
+      if (!configuration.success) throw new Error(configuration.message);
+      await adapters.wait({ node, configuration: configuration.configuration });
+      return value;
+    }
+    case "control.condition":
+      return value;
+    case "control.loop": {
+      const items = await loopItems({
+        configuration: node.configuration,
+        value,
+        workflowInput,
+        outputs,
+        adapters,
+      });
+      const maxIterations = Number(node.configuration.maxIterations);
+      if (items.length > maxIterations) {
+        throw new Error(`Loop input exceeds the configured ${maxIterations}-iteration limit.`);
+      }
+      const body = loopBody(node.configuration);
+      const iterations: JsonValue[] = [];
+      for (let index = 0; index < items.length; index += 1) {
+        if (options.signal?.aborted) {
+          throw options.signal.reason instanceof Error
+            ? options.signal.reason
+            : new Error("Workflow execution was cancelled.");
+        }
+        const item = items[index] ?? null;
+        const loopOutput: JsonObject = { item, index };
+        const bodyResult = await executeFlowcordiaWorkflow(body, loopOutput, adapters, {
+          ...options,
+          initialOutputs: {
+            ...Object.fromEntries(outputs),
+            [node.id]: loopOutput,
+          },
+          onTrace: async (trace) =>
+            recordTrace({
+              ...trace,
+              nodeId: `${node.id}[${index}].${trace.nodeId}`,
+            }),
+        });
+        if (!bodyResult.success) {
+          throw new Error(
+            bodyResult.traces.find(
+              (trace) => trace.status === "FAILED" || trace.status === "CANCELLED"
+            )?.message ?? `Loop iteration ${index} failed.`
+          );
+        }
+        iterations.push({ item, index, output: bodyResult.output });
+      }
+      const last = iterations.at(-1) as JsonObject | undefined;
+      return {
+        item: last?.item ?? null,
+        index: last?.index ?? -1,
+        iterations,
+      };
+    }
+    case "code.task": {
+      assertFunctionBoundary(node, "input", node.inputSchema, value);
+      const output = await adapters.code({ node, reference: node.codeReference!, value });
+      assertFunctionBoundary(node, "output", node.outputSchema, output);
+      return output;
+    }
+    case "code.typescript": {
+      const parsed = validateStudioV2SourceDocument(node.configuration);
+      if (!parsed.success) {
+        throw new Error(parsed.issues[0]?.message ?? "TypeScript Source configuration is invalid.");
+      }
+      assertFunctionBoundary(node, "input", node.inputSchema, value);
+      const output = await adapters.source({
+        node,
+        document: parsed.document,
+        context: {
+          input: workflowInput,
+          steps: Object.fromEntries(outputs),
+          variables: options.variables ?? {},
+          execution: {
+            workflowId: workflow.id,
+            nodeId: node.id,
+            environment:
+              options.environment ?? (adapters.mode === "preview" ? "test" : "production"),
+            ...(options.runId ? { runId: options.runId } : {}),
+            ...(options.attempt !== undefined ? { attempt: options.attempt } : {}),
+          },
+        },
+      });
+      assertFunctionBoundary(node, "output", node.outputSchema, output);
+      return output;
+    }
+    default:
+      throw new Error(`Unsupported Flowcordia operation: ${node.operation}`);
+  }
+}
+
+export async function executeFlowcordiaWorkflow(
+  workflow: WorkflowDefinition,
+  payload: JsonValue,
+  adapters: FlowcordiaRuntimeAdapters,
+  options: FlowcordiaExecuteOptions = {}
+): Promise<FlowcordiaExecutionResult> {
+  const traces: FlowcordiaExecutionResult["traces"] = [];
+  const executionIdentity = {
+    ...(options.runId ? { runId: options.runId } : {}),
+    ...(options.attempt !== undefined ? { attempt: options.attempt } : {}),
+  };
+  const recordTrace = async (trace: FlowcordiaExecutionResult["traces"][number]) => {
+    traces.push(trace);
+    try {
+      await options.onTrace?.(trace);
+    } catch {
+      // Observability must not change workflow behavior.
+    }
+  };
+  const validated = validateWorkflow(workflow);
+  const analysis = validated.success ? analyzeWorkflow(validated.workflow) : null;
+  if (!validated.success || !analysis || analysis.issues.length > 0) {
+    const completedAt = new Date().toISOString();
+    await recordTrace({
+      nodeId: "workflow",
+      operation: "validate",
+      status: "FAILED",
+      startedAt: completedAt,
+      completedAt,
+      durationMs: 0,
+      message: validated.success ? analysis?.issues[0]?.message : validated.issues[0]?.message,
+    });
+    return {
+      success: false,
+      workflowId: workflow?.id ?? "invalid",
+      mode: adapters.mode,
+      output: null,
+      traces,
+      failedNodeId: "workflow",
+      ...executionIdentity,
+    };
+  }
+  if (workflow.nodes.length > (options.maxNodes ?? 100)) {
+    const completedAt = new Date().toISOString();
+    await recordTrace({
+      nodeId: "workflow",
+      operation: "limit",
+      status: "FAILED",
+      startedAt: completedAt,
+      completedAt,
+      durationMs: 0,
+      message: "Workflow exceeds the configured execution node limit.",
+    });
+    return {
+      success: false,
+      workflowId: workflow.id,
+      mode: adapters.mode,
+      output: null,
+      traces,
+      failedNodeId: "workflow",
+      ...executionIdentity,
+    };
+  }
+
+  const nodes = new Map(workflow.nodes.map((node) => [node.id, node]));
+  const outputs = new Map<string, JsonValue>(Object.entries(options.initialOutputs ?? {}));
+  const executed = new Set<string>();
+  const branchOutcomes = new Map<string, boolean>();
+  for (const nodeId of analysis.orderedNodeIds) {
+    const node = nodes.get(nodeId)!;
+    if (options.signal?.aborted) {
+      const completedAt = new Date().toISOString();
+      await recordTrace({
+        nodeId,
+        operation: node.operation,
+        status: "CANCELLED",
+        startedAt: completedAt,
+        completedAt,
+        durationMs: 0,
+        message:
+          options.signal.reason instanceof Error
+            ? options.signal.reason.message
+            : "Workflow execution was cancelled.",
+      });
+      return {
+        success: false,
+        workflowId: workflow.id,
+        mode: adapters.mode,
+        output: null,
+        traces,
+        failedNodeId: nodeId,
+        cancelled: true,
+        ...executionIdentity,
+      };
+    }
+    if (!shouldExecute(workflow, node, executed, branchOutcomes)) {
+      const completedAt = new Date().toISOString();
+      await recordTrace({
+        nodeId,
+        operation: node.operation,
+        status: "SKIPPED",
+        startedAt: completedAt,
+        completedAt,
+        durationMs: 0,
+      });
+      continue;
+    }
+    const startedAt = new Date();
+    let nodeInput: JsonValue | undefined;
+    try {
+      nodeInput = inputForNode(workflow, node, payload, outputs);
+      if (node.operation === "control.condition") {
+        branchOutcomes.set(node.id, conditionMatches(node.configuration, nodeInput));
+      }
+      const output = await executeNode({
+        workflow,
+        node,
+        workflowInput: payload,
+        value: nodeInput,
+        outputs,
+        adapters,
+        options,
+        recordTrace,
+      });
+      outputs.set(nodeId, output);
+      executed.add(nodeId);
+      const completedAt = new Date();
+      await recordTrace({
+        nodeId,
+        operation: node.operation,
+        status: "SUCCEEDED",
+        startedAt: startedAt.toISOString(),
+        completedAt: completedAt.toISOString(),
+        durationMs: Math.max(0, completedAt.getTime() - startedAt.getTime()),
+        ...(options.includeTraceInput ? { input: nodeInput } : {}),
+        output,
+        ...(node.operation === "approval.human" && adapters.mode === "preview"
+          ? { message: "Human approval was simulated during structural preview." }
+          : {}),
+      });
+    } catch (error) {
+      const completedAt = new Date();
+      const cancelled = options.signal?.aborted === true;
+      await recordTrace({
+        nodeId,
+        operation: node.operation,
+        status: cancelled ? "CANCELLED" : "FAILED",
+        startedAt: startedAt.toISOString(),
+        completedAt: completedAt.toISOString(),
+        durationMs: Math.max(0, completedAt.getTime() - startedAt.getTime()),
+        ...(options.includeTraceInput && nodeInput !== undefined ? { input: nodeInput } : {}),
+        message:
+          error instanceof Error
+            ? error.message
+            : cancelled
+              ? "Workflow execution was cancelled."
+              : "Workflow node failed.",
+      });
+      return {
+        success: false,
+        workflowId: workflow.id,
+        mode: adapters.mode,
+        output: null,
+        traces,
+        failedNodeId: nodeId,
+        ...(cancelled ? { cancelled: true } : {}),
+        ...executionIdentity,
+      };
+    }
+  }
+
+  const outputNode = [...workflow.nodes]
+    .reverse()
+    .find((node) => node.kind === "output" && outputs.has(node.id));
+  const lastExecuted = [...analysis.orderedNodeIds].reverse().find((id) => outputs.has(id));
+  return {
+    success: true,
+    workflowId: workflow.id,
+    mode: adapters.mode,
+    output: outputs.get(outputNode?.id ?? lastExecuted ?? "") ?? null,
+    traces,
+    ...executionIdentity,
+  };
+}
+
+export function createPreviewRuntimeAdapters(
+  options: FlowcordiaPreviewRuntimeOptions = {}
+): FlowcordiaRuntimeAdapters {
+  return {
+    mode: "preview",
+    evaluateExpression({ expression, workflowInput, outputs }) {
+      const evaluated = exactExpressionValue(
+        expression,
+        activepiecesSampleData(workflowInput, new Map(Object.entries(outputs)))
+      );
+      if (evaluated === undefined) {
+        throw new Error(`Activepieces formula could not be resolved: ${expression}`);
+      }
+      return evaluated;
+    },
+    async activepieces({ node, configuration }) {
+      const mocked = options.activepiecesMocks?.[node.id];
+      if (mocked !== undefined) return jsonValue(mocked);
+      return {
+        simulated: true,
+        pieceName: configuration.settings.pieceName,
+        pieceVersion: configuration.settings.pieceVersion,
+        actionName: configuration.settings.actionName ?? null,
+        nodeId: node.id,
+      };
+    },
+    async http({ configuration, value }) {
+      return {
+        simulated: true,
+        request: { method: configuration.method ?? "GET", url: configuration.url ?? "" },
+        input: value,
+      };
+    },
+    async code({ node, reference, value }) {
+      const mocked = options.codeMocks?.[node.id];
+      if (mocked !== undefined) return jsonValue(mocked);
+      if (node.outputSchema) return createWorkflowFunctionPreviewValue(node.outputSchema);
+      return {
+        simulated: true,
+        nodeId: node.id,
+        codeReference: { path: reference.path, exportName: reference.exportName },
+        input: value,
+      };
+    },
+    async source({ node, document, context }) {
+      const mocked = options.sourceMocks?.[node.id];
+      if (mocked !== undefined) return jsonValue(mocked);
+      return executeStudioV2TypeScriptSource({
+        document,
+        context: {
+          ...context,
+          variables: options.variables ?? context.variables,
+        },
+        credentials: {},
+      });
+    },
+    async wait() {
+      // Preview proves the wait configuration without delaying the operator.
+    },
+    async approval() {
+      return (
+        options.approvalDecision ?? {
+          decision: "approved",
+          comment: null,
+          decidedAt: "1970-01-01T00:00:00.000Z",
+        }
+      );
+    },
+    async subflow({ node, workflowId, payloads }) {
+      const configured = options.subflowOutputs?.[node.id];
+      if (configured !== undefined) {
+        const configuredOutputs = Array.isArray(configured) ? configured : [configured];
+        return configuredOutputs.map(jsonValue);
+      }
+      return payloads.map((subflowInput, index) => ({
+        simulated: true,
+        workflowId,
+        item: index,
+        input: subflowInput,
+      }));
+    },
+  };
+}
+
+const FORBIDDEN_CREDENTIAL_HEADER_NAMES = new Set([
+  "connection",
+  "content-length",
+  "host",
+  "keep-alive",
+  "proxy-authenticate",
+  "proxy-authorization",
+  "proxy-connection",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+]);
+const HTTP_HEADER_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+
+class FlowcordiaHttpRuntimeError extends Error {}
+
+function httpConfiguration(configuration: JsonObject): FlowcordiaHttpConfiguration {
+  const parsed = parseFlowcordiaHttpConfiguration(configuration);
+  if (!parsed.success) {
+    throw new FlowcordiaHttpRuntimeError(
+      parsed.issues[0]?.message ?? "HTTP node configuration is invalid."
+    );
+  }
+  return parsed.configuration;
+}
+
+async function cancelResponseBody(response: Response): Promise<void> {
+  await response.body?.cancel().catch(() => undefined);
+}
+
+async function readBoundedResponseBody(response: Response, maxBytes: number): Promise<string> {
+  const contentLength = response.headers.get("content-length");
+  if (contentLength && /^\d+$/.test(contentLength) && Number(contentLength) > maxBytes) {
+    await cancelResponseBody(response);
+    throw new FlowcordiaHttpRuntimeError(
+      `HTTP response exceeds the configured ${maxBytes}-byte limit.`
+    );
+  }
+  if (!response.body) return "";
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      totalBytes += chunk.value.byteLength;
+      if (totalBytes > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        throw new FlowcordiaHttpRuntimeError(
+          `HTTP response exceeds the configured ${maxBytes}-byte limit.`
+        );
+      }
+      chunks.push(chunk.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const body = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(body);
+}
+
+async function readHttpResponse(
+  response: Response,
+  configuration: FlowcordiaHttpConfiguration
+): Promise<JsonValue> {
+  if (configuration.responseMode === "none") {
+    await cancelResponseBody(response);
+    return null;
+  }
+
+  const text = await readBoundedResponseBody(response, configuration.maxResponseBytes);
+  if (!text) return null;
+  if (configuration.responseMode === "text") return text;
+  try {
+    return jsonValue(JSON.parse(text));
+  } catch {
+    if (configuration.responseMode === "auto") return text;
+    throw new FlowcordiaHttpRuntimeError("HTTP response was expected to contain valid JSON.");
+  }
+}
+
+function requestAbortState(timeoutSeconds: number, parent?: AbortSignal) {
+  const controller = new AbortController();
+  let timedOut = false;
+  const abortFromParent = () => controller.abort(parent?.reason);
+  if (parent?.aborted) abortFromParent();
+  else parent?.addEventListener("abort", abortFromParent, { once: true });
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutSeconds * 1_000);
+  return {
+    signal: controller.signal,
+    timedOut: () => timedOut,
+    cleanup() {
+      clearTimeout(timeout);
+      parent?.removeEventListener("abort", abortFromParent);
+    },
+  };
+}
+
+export function createTriggerRuntimeAdapters(
+  options: FlowcordiaTriggerRuntimeOptions
+): FlowcordiaRuntimeAdapters {
+  const fetchImplementation = options.fetch ?? globalThis.fetch;
+  return {
+    mode: "live",
+    evaluateExpression({ expression, workflowInput, outputs }) {
+      if (options.activepiecesFormulaEvaluator) {
+        const evaluated = options.activepiecesFormulaEvaluator.evaluate({
+          expression,
+          sampleData: activepiecesSampleData(workflowInput, new Map(Object.entries(outputs))),
+        });
+        if (evaluated.error) {
+          throw new Error(`Activepieces formula could not be resolved: ${evaluated.error}`);
+        }
+        return jsonValue(evaluated.result);
+      }
+      const evaluated = exactExpressionValue(
+        expression,
+        activepiecesSampleData(workflowInput, new Map(Object.entries(outputs)))
+      );
+      if (evaluated === undefined) {
+        throw new Error(`Activepieces formula could not be resolved: ${expression}`);
+      }
+      return evaluated;
+    },
+    async activepieces({ node, configuration, workflowInput, outputs }) {
+      if (!options.loadActivepiecesPiece) {
+        throw new Error("Activepieces piece loading is unavailable in this runtime.");
+      }
+      if (!options.resolveActivepiecesConnection) {
+        throw new Error("Activepieces connection resolution is unavailable in this runtime.");
+      }
+      return executeFlowcordiaActivepiecesAction({
+        node,
+        configuration,
+        workflowInput,
+        outputs,
+        services: {
+          loadPiece: options.loadActivepiecesPiece,
+          resolveConnection: options.resolveActivepiecesConnection,
+          formulaEvaluator: options.activepiecesFormulaEvaluator,
+          projectId: options.activepiecesProjectId,
+          projectExternalId: options.activepiecesProjectExternalId,
+          runId: options.activepiecesRunId,
+          serverApiUrl: options.activepiecesServerApiUrl,
+          serverPublicUrl: options.activepiecesServerPublicUrl,
+          store: options.activepiecesStore,
+        },
+      });
+    },
+    async subflow({ workflowId, payloads }) {
+      if (!options.invokeSubflow) {
+        throw new Error("Subflow invocation is unavailable in this runtime.");
+      }
+      return options.invokeSubflow({
+        taskId: flowcordiaSubflowTaskId(workflowId),
+        payloads,
+      });
+    },
+    async source({ document, context }) {
+      const credentials: Record<string, JsonValue> = {};
+      for (const reference of document.credentialReferences) {
+        if (!options.resolveCredential) {
+          throw new Error(`Credential reference "${reference}" has no runtime resolver.`);
+        }
+        credentials[reference] = jsonValue(await options.resolveCredential(reference));
+      }
+      return executeStudioV2TypeScriptSource({ document, context, credentials });
+    },
+    async http({ node, configuration, value, signal }) {
+      if (!fetchImplementation) throw new Error("Fetch is unavailable in this runtime.");
+      const parsedConfiguration = httpConfiguration(configuration);
+      const url = new URL(parsedConfiguration.url);
+      if (!(await options.authorizeHttp(url))) {
+        throw new Error("HTTP destination is not allowed by the Flowcordia egress policy.");
+      }
+      const credentialHeaderOwners = new Map<string, string>();
+      const headerEntries = new Map<string, string>();
+      for (const reference of node.credentialReferences ?? []) {
+        if (!options.resolveCredential) {
+          throw new Error(`Credential reference "${reference}" has no runtime resolver.`);
+        }
+        const credential = await options.resolveCredential(reference);
+        const credentialHeaders = credential.headers;
+        if (
+          !credentialHeaders ||
+          typeof credentialHeaders !== "object" ||
+          Array.isArray(credentialHeaders)
+        ) {
+          throw new Error(`Credential reference "${reference}" must provide a headers object.`);
+        }
+        for (const [name, headerValue] of Object.entries(credentialHeaders)) {
+          if (typeof headerValue !== "string" || /[\r\n]/.test(headerValue)) {
+            throw new Error(`Credential reference "${reference}" contains an invalid header.`);
+          }
+          const normalizedName = name.trim().toLowerCase();
+          if (
+            !HTTP_HEADER_NAME.test(normalizedName) ||
+            FORBIDDEN_CREDENTIAL_HEADER_NAMES.has(normalizedName)
+          ) {
+            throw new Error(`Credential reference "${reference}" contains a forbidden header.`);
+          }
+          const existingOwner = credentialHeaderOwners.get(normalizedName);
+          if (existingOwner) {
+            throw new Error(
+              `Credential references "${existingOwner}" and "${reference}" both provide the "${normalizedName}" header.`
+            );
+          }
+          credentialHeaderOwners.set(normalizedName, reference);
+          headerEntries.set(normalizedName, headerValue);
+        }
+      }
+      if (parsedConfiguration.bodyMode === "input" && !headerEntries.has("content-type")) {
+        headerEntries.set("content-type", "application/json");
+      }
+
+      const abortState = requestAbortState(parsedConfiguration.timeoutSeconds, signal);
+      try {
+        const response = await fetchImplementation(url, {
+          method: parsedConfiguration.method,
+          headers: Object.fromEntries(headerEntries),
+          redirect: "manual",
+          signal: abortState.signal,
+          ...(parsedConfiguration.bodyMode === "input" ? { body: JSON.stringify(value) } : {}),
+        });
+        if (response.status >= 300 && response.status < 400) {
+          await cancelResponseBody(response);
+          throw new FlowcordiaHttpRuntimeError(
+            "HTTP redirects are not followed; call the final allowlisted HTTPS destination directly."
+          );
+        }
+        if (!response.ok) {
+          await cancelResponseBody(response);
+          throw new FlowcordiaHttpRuntimeError(
+            `HTTP request failed with status ${response.status}.`
+          );
+        }
+        return await readHttpResponse(response, parsedConfiguration);
+      } catch (error) {
+        if (abortState.timedOut()) {
+          throw new FlowcordiaHttpRuntimeError(
+            `HTTP request timed out after ${parsedConfiguration.timeoutSeconds} seconds.`
+          );
+        }
+        if (signal?.aborted) {
+          throw new FlowcordiaHttpRuntimeError("HTTP request was cancelled.");
+        }
+        if (error instanceof FlowcordiaHttpRuntimeError) throw error;
+        throw new FlowcordiaHttpRuntimeError("HTTP request could not be completed.");
+      } finally {
+        abortState.cleanup();
+      }
+    },
+    async code({ node, value }) {
+      const handler = options.codeHandlers?.[node.id];
+      if (!handler) throw new Error(`Code handler "${node.id}" is not registered.`);
+      return jsonValue(await handler(value));
+    },
+    async wait({ configuration }) {
+      await options.wait(configuration);
+    },
+    async approval(approvalInput) {
+      if (!options.approval) {
+        throw new Error("Human approval is unavailable in this runtime.");
+      }
+      return options.approval(approvalInput);
+    },
+  };
+}

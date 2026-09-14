@@ -1,0 +1,184 @@
+import type { ControlPlaneScope } from "@flowcordia/control-plane";
+import type { JsonValue } from "@flowcordia/workflow";
+import { prisma } from "~/db.server";
+import { authIncludeBase, toAuthenticated } from "~/models/runtimeEnvironment.server";
+import { TriggerTaskService } from "~/v3/services/triggerTask.server";
+import { flowcordiaProposalStore } from "../../proposals/prisma.server";
+import {
+  evaluateFlowcordiaPreviewClosureInstallation,
+  resolveFlowcordiaPreviewClosureExpectation,
+} from "./closure-installation";
+import { flowcordiaPreviewRunIdempotencyKey, flowcordiaPreviewRunSeedMetadata } from "./identity";
+
+export type FlowcordiaPreviewRunErrorCode =
+  | "preview_not_ready"
+  | "proposal_conflict"
+  | "closure_not_deployed"
+  | "task_not_deployed"
+  | "trigger_failed";
+
+export class FlowcordiaPreviewRunError extends Error {
+  constructor(
+    readonly code: FlowcordiaPreviewRunErrorCode,
+    message: string,
+    readonly status: number,
+    readonly retryable: boolean
+  ) {
+    super(message);
+    this.name = "FlowcordiaPreviewRunError";
+  }
+}
+
+export async function triggerFlowcordiaPreviewRun(input: {
+  scope: ControlPlaneScope;
+  workflowId: string;
+  expectedHeadSha: string;
+  requestId: string;
+  payload: JsonValue;
+}) {
+  const proposals = await flowcordiaProposalStore.listProposals({
+    tenantId: input.scope.tenantId,
+    projectId: input.scope.projectId,
+    repositoryId: input.scope.repositoryId,
+    limit: 100,
+  });
+  const proposal = proposals.find(
+    (candidate) =>
+      candidate.workflowId === input.workflowId &&
+      candidate.headSha === input.expectedHeadSha &&
+      !["MERGED", "CLOSED", "FAILED"].includes(candidate.state)
+  );
+  if (!proposal) {
+    throw new FlowcordiaPreviewRunError(
+      "proposal_conflict",
+      "The proposal head changed. Refresh Studio before starting a live preview run.",
+      409,
+      false
+    );
+  }
+
+  const closureExpectation = resolveFlowcordiaPreviewClosureExpectation(proposal);
+  if (!closureExpectation.success) {
+    throw new FlowcordiaPreviewRunError(
+      "closure_not_deployed",
+      closureExpectation.proof.state === "NOT_RECORDED"
+        ? "Republish this proposal to record its immutable workflow closure."
+        : "The stored proposal closure identity is invalid.",
+      409,
+      false
+    );
+  }
+
+  const environment = await prisma.runtimeEnvironment.findFirst({
+    where: {
+      organizationId: input.scope.tenantId,
+      projectId: input.scope.projectId,
+      type: "PREVIEW",
+      parentEnvironmentId: { not: null },
+      branchName: proposal.proposalBranch,
+      archivedAt: null,
+    },
+    include: authIncludeBase,
+  });
+  if (!environment) {
+    throw new FlowcordiaPreviewRunError(
+      "preview_not_ready",
+      "The proposal preview environment is not ready yet.",
+      409,
+      true
+    );
+  }
+
+  const deployment = await prisma.workerDeployment.findFirst({
+    where: {
+      projectId: input.scope.projectId,
+      environmentId: environment.id,
+      commitSHA: input.expectedHeadSha,
+      status: "DEPLOYED",
+      workerId: { not: null },
+    },
+    orderBy: { createdAt: "desc" },
+    select: { version: true, workerId: true },
+  });
+  if (!deployment?.workerId) {
+    throw new FlowcordiaPreviewRunError(
+      "preview_not_ready",
+      "The exact proposal head has not finished deploying.",
+      409,
+      true
+    );
+  }
+
+  const installedTasks = await prisma.backgroundWorkerTask.findMany({
+    where: {
+      projectId: input.scope.projectId,
+      runtimeEnvironmentId: environment.id,
+      workerId: deployment.workerId,
+      slug: { in: closureExpectation.taskIdentifiers },
+    },
+    select: { slug: true },
+  });
+  const closure = evaluateFlowcordiaPreviewClosureInstallation({
+    proposal,
+    installedTaskIdentifiers: installedTasks.map((task) => task.slug),
+  });
+  if (closure.state !== "READY") {
+    throw new FlowcordiaPreviewRunError(
+      "closure_not_deployed",
+      closure.state === "WAITING"
+        ? "The preview worker has not installed every workflow in this proposal closure."
+        : "The preview worker task inventory conflicts with the proposal closure.",
+      409,
+      closure.state === "WAITING"
+    );
+  }
+
+  const taskIdentifier = `flowcordia-${input.workflowId}`;
+  try {
+    const runIdentity = {
+      workflowId: input.workflowId,
+      proposalId: proposal.proposalId,
+      headSha: input.expectedHeadSha,
+    };
+    const idempotencyKey = flowcordiaPreviewRunIdempotencyKey(runIdentity, input.requestId);
+    const result = await new TriggerTaskService().call(
+      taskIdentifier,
+      toAuthenticated(environment),
+      {
+        payload: input.payload,
+        options: {
+          payloadType: "application/json",
+          lockToVersion: deployment.version,
+          idempotencyKey,
+          idempotencyKeyTTL: "10m",
+          metadata: {
+            flowcordiaTrigger: flowcordiaPreviewRunSeedMetadata(runIdentity),
+          },
+        },
+      },
+      {
+        idempotencyKey,
+        idempotencyKeyExpiresAt: new Date(Date.now() + 10 * 60 * 1000),
+        triggerSource: "dashboard",
+        triggerAction: "flowcordia_preview",
+      }
+    );
+    if (!result) {
+      throw new FlowcordiaPreviewRunError(
+        "task_not_deployed",
+        "The generated Flowcordia root task is unavailable in this deployment.",
+        409,
+        true
+      );
+    }
+    return { friendlyId: result.run.friendlyId, cached: result.isCached };
+  } catch (error) {
+    if (error instanceof FlowcordiaPreviewRunError) throw error;
+    throw new FlowcordiaPreviewRunError(
+      "trigger_failed",
+      "The live preview run could not be started.",
+      503,
+      true
+    );
+  }
+}

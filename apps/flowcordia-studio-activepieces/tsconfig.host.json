@@ -1,0 +1,30 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "paths": {
+      "@activepieces/shared": ["src/typecheck/activepieces-shared.ts"],
+      "@flowcordia/workflow": ["../../packages/flowcordia-workflow/src/index.ts"],
+      "@flowcordia/foundation": ["../../packages/flowcordia-foundation/src/index.ts"],
+      "@/polyfills": ["src/typecheck/activepieces-web.ts"],
+      "@/i18n": ["src/typecheck/activepieces-web.ts"],
+      "@/styles.css": ["src/typecheck/activepieces-web.ts"],
+      "@/app/builder": ["src/typecheck/activepieces-web.ts"],
+      "@/app/builder/builder-hooks": ["src/typecheck/activepieces-web.ts"],
+      "@/app/query-client": ["src/typecheck/activepieces-web.ts"],
+      "@/components/custom/ap-error-dialog/ap-error-dialog": ["src/typecheck/activepieces-web.ts"],
+      "@/components/providers/embed-provider": ["src/typecheck/activepieces-web.ts"],
+      "@/components/providers/socket-provider": ["src/typecheck/activepieces-web.ts"],
+      "@/components/providers/theme-provider": ["src/typecheck/activepieces-web.ts"],
+      "@/components/ui/sonner": ["src/typecheck/activepieces-web.ts"],
+      "@/components/ui/tooltip": ["src/typecheck/activepieces-web.ts"]
+    }
+  },
+  "include": [
+    "src/main.tsx",
+    "src/studio-host.tsx",
+    "src/activepieces-api.ts",
+    "src/activepieces-authentication-session.ts",
+    "src/activepieces-flags.ts",
+    "src/activepieces-piece-catalog.ts"
+  ]
+}

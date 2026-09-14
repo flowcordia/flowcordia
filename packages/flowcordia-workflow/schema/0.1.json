@@ -1,0 +1,156 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://flowcordia.dev/schemas/workflow/0.1.json",
+  "title": "Flowcordia workflow",
+  "description": "Portable source contract shared by Flowcordia Studio, code tooling, Git history, and the compiler.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "id", "name", "nodes", "edges"],
+  "properties": {
+    "schemaVersion": { "const": "0.1" },
+    "id": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{2,127}$" },
+    "name": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "description": { "type": "string", "maxLength": 2000 },
+    "nodes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/node" }
+    },
+    "edges": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/edge" }
+    },
+    "labels": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1, "maxLength": 64 },
+      "uniqueItems": true
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "createdBy": { "type": "string" },
+        "updatedAt": { "type": "string" },
+        "sourceRepository": { "type": "string" },
+        "sourcePath": { "type": "string" },
+        "sourceProject": { "$ref": "#/$defs/sourceProject" }
+      }
+    }
+  },
+  "$defs": {
+    "sourceProject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entrypoint", "files", "dependencies", "credentialReferences"],
+      "properties": {
+        "entrypoint": { "type": "string", "pattern": "^/(?:[A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+$" },
+        "files": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 100,
+          "propertyNames": { "pattern": "^/(?:[A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+$" },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["code"],
+            "properties": {
+              "code": { "type": "string", "maxLength": 500000 },
+              "hidden": { "type": "boolean" },
+              "readOnly": { "type": "boolean" }
+            }
+          }
+        },
+        "dependencies": {
+          "type": "object",
+          "maxProperties": 100,
+          "propertyNames": { "pattern": "^(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$" },
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$"
+          }
+        },
+        "credentialReferences": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true,
+          "maxItems": 100
+        }
+      }
+    },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "operation", "position", "configuration"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{1,127}$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "kind": {
+          "enum": ["trigger", "action", "control", "code", "subflow", "approval", "output"]
+        },
+        "operation": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "position": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["x", "y"],
+          "properties": {
+            "x": { "type": "number" },
+            "y": { "type": "number" }
+          }
+        },
+        "configuration": { "type": "object", "additionalProperties": true },
+        "inputSchema": { "type": "object", "additionalProperties": true },
+        "outputSchema": { "type": "object", "additionalProperties": true },
+        "credentialReferences": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "runtime": { "$ref": "#/$defs/runtimePolicy" },
+        "codeReference": { "$ref": "#/$defs/codeReference" }
+      }
+    },
+    "edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "source", "target"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{1,127}$" },
+        "source": { "type": "string", "minLength": 1 },
+        "target": { "type": "string", "minLength": 1 },
+        "sourceHandle": { "type": "string", "minLength": 1 },
+        "targetHandle": { "type": "string", "minLength": 1 },
+        "condition": { "type": "string", "maxLength": 4000 }
+      }
+    },
+    "runtimePolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "queue": { "type": "string", "minLength": 1 },
+        "concurrencyKey": { "type": "string", "minLength": 1 },
+        "machine": { "type": "string", "minLength": 1 },
+        "maxDurationSeconds": { "type": "integer", "minimum": 1 },
+        "retry": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "maxAttempts": { "type": "integer", "minimum": 0 },
+            "minTimeoutMs": { "type": "integer", "minimum": 0 },
+            "maxTimeoutMs": { "type": "integer", "minimum": 0 },
+            "factor": { "type": "number", "minimum": 1 }
+          }
+        }
+      }
+    },
+    "codeReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "exportName"],
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "path": { "type": "string", "minLength": 1 },
+        "exportName": { "type": "string", "minLength": 1 },
+        "commit": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

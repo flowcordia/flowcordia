@@ -1,0 +1,29 @@
+name: Vouch Request
+description: Request to be vouched as a contributor
+labels: ["vouch-request"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Vouch Request
+
+        Use this form only when maintainers have enabled contributor vouching for this repository.
+        It is disabled by default. When enabled, unvouched pull requests may be closed automatically.
+
+        To get vouched, fill out this form. A maintainer will review your request and vouch for you by commenting on this issue.
+  - type: textarea
+    id: context
+    attributes:
+      label: Why do you want to contribute?
+      description: Tell us a bit about yourself and what you'd like to work on.
+      placeholder: "I'd like to fix a bug I found in..."
+    validations:
+      required: true
+  - type: textarea
+    id: prior-work
+    attributes:
+      label: Prior contributions or relevant experience
+      description: Links to previous open source work, relevant projects, or anything that helps us understand your background.
+      placeholder: "https://github.com/..."
+    validations:
+      required: false

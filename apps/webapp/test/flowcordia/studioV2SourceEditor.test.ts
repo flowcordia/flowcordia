@@ -1,0 +1,251 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { describe, expect, it } from "vitest";
+
+function readRepositoryFile(path: string): string {
+  return readFileSync(resolve(process.cwd(), "../..", path), "utf8");
+}
+
+const routePath =
+  "apps/webapp/app/routes/_app.orgs.$organizationSlug.projects.$projectParam.env.$envParam.flowcordia.studio-v2/route.tsx";
+const hostPath = "apps/webapp/app/features/flowcordia/workflows/studio-v2/StudioV2BuilderHost.tsx";
+const sourceSurfacePath =
+  "apps/webapp/app/features/flowcordia/workflows/studio-v2/source/StudioV2SourceSurface.tsx";
+const sourceWorkspacePath =
+  "apps/webapp/app/features/flowcordia/workflows/studio-v2/source/StudioV2SourceWorkspace.tsx";
+const sourceWorkspaceClientPath =
+  "apps/webapp/app/features/flowcordia/workflows/studio-v2/source/StudioV2SourceWorkspace.client.tsx";
+const sourceWorkspaceViewPath =
+  "apps/webapp/app/features/flowcordia/workflows/studio-v2/source/StudioV2SourceWorkspaceView.client.tsx";
+const sourceModelPath =
+  "apps/webapp/app/features/flowcordia/workflows/studio-v2/source/workspace-model.ts";
+const sourceTestContextPath =
+  "apps/webapp/app/features/flowcordia/workflows/studio-v2/source-test-context.server.ts";
+const sourceTestServicePath =
+  "apps/webapp/app/features/flowcordia/workflows/studio-v2/source-test.server.ts";
+const legacySourceWorkspacePath =
+  "apps/webapp/app/features/flowcordia/workflows/studio/WorkflowSourceWorkspace.tsx";
+const webappPackagePath = "apps/webapp/package.json";
+
+describe("Flowcordia Studio V2 Source editor foundation", () => {
+  const route =
+    readRepositoryFile(routePath) +
+    readRepositoryFile(
+      "apps/webapp/app/features/flowcordia/workflows/studio-v2/workspace-handlers.server.ts"
+    );
+  const host = readRepositoryFile(hostPath);
+  const sourceSurface = readRepositoryFile(sourceSurfacePath);
+  const sourceWorkspace = readRepositoryFile(sourceWorkspacePath);
+  const sourceWorkspaceClient = readRepositoryFile(sourceWorkspaceClientPath);
+  const sourceWorkspaceView = readRepositoryFile(sourceWorkspaceViewPath);
+  const sourceModel = readRepositoryFile(sourceModelPath);
+  const sourceTestContext = readRepositoryFile(sourceTestContextPath);
+  const sourceTestService = readRepositoryFile(sourceTestServicePath);
+  const legacySourceWorkspace = readRepositoryFile(legacySourceWorkspacePath);
+  const webappPackage = readRepositoryFile(webappPackagePath);
+
+  it("adds Source as URL-backed Studio navigation without replacing the visual editor", () => {
+    expect(route).toContain("resolveStudioV2View(searchParams)");
+    expect(route).toContain('handleStudioViewChange("source")');
+    expect(route).toContain('handleStudioViewChange("editor")');
+    expect(route).toContain("studioV2SearchParamsForView(current, view)");
+    expect(route).toContain("isStudioV2ViewOnlyNavigation(currentUrl, nextUrl)");
+    expect(route).toContain('if (!workspace || editorSaving || studioView !== "editor") return');
+    expect(route).toContain('hidden={studioView !== "editor"}');
+    expect(route).toContain('hidden={studioView !== "source"}');
+    expect(route).toContain("StudioV2BuilderHost");
+    expect(route).toContain("StudioV2SourceSurface");
+    expect(route).toContain('aria-label="Studio view"');
+  });
+
+  it("keeps navigation in one persistent Studio toolbar and Source actions in a file toolbar", () => {
+    expect(route).toContain('aria-pressed={studioView === "editor"}');
+    expect(route).toContain('aria-pressed={studioView === "source"}');
+    expect(sourceWorkspaceView).toContain('aria-label="Source file actions"');
+    expect(sourceWorkspaceView).not.toContain('aria-label="Return to visual editor"');
+  });
+
+  it("keeps the Activepieces iframe mounted and refreshes its viewport when Editor returns", () => {
+    expect(route.indexOf("<StudioV2BuilderHost")).toBeLessThan(route.indexOf("{sourceMounted ? ("));
+    expect(route).toContain('active={studioView === "editor"}');
+    expect(route).toContain('hidden={studioView !== "editor"}');
+    expect(route).toContain('hidden={studioView !== "source"}');
+    expect(host).toContain("aria-hidden={!active}");
+    expect(host).toContain("tabIndex={active ? 0 : -1}");
+    expect(host).toContain('contentWindow?.dispatchEvent(new Event("resize"))');
+    expect(host).toContain("pendingExternalBootstrapRef.current");
+    expect(host).toContain("activeRef.current");
+    expect(host).toContain("observedWorkspaceRef.current");
+    expect(host).toContain("handlersRef.current.onWorkspaceChange");
+    expect(host).not.toContain("[onError, onSavingChange, onWorkspaceChange, sendBootstrap]");
+    expect(host).toContain('className="block h-full min-h-0 w-full');
+  });
+
+  it("pins Sandpack and uses its public workspace, file explorer, and editor primitives", () => {
+    expect(webappPackage).toContain('"@codesandbox/sandpack-react": "2.20.0"');
+    expect(sourceWorkspace).not.toContain("@codesandbox/sandpack-react");
+    expect(sourceModel).not.toContain("@codesandbox/sandpack-react");
+    expect(sourceWorkspaceView).not.toContain("@codesandbox/sandpack-react");
+
+    expect(sourceWorkspaceClient).toContain('from "@codesandbox/sandpack-react"');
+    expect(sourceWorkspaceClient).not.toContain("@codesandbox/sandpack-react/");
+    expect(sourceWorkspaceClient).toContain("SandpackProvider");
+    expect(sourceWorkspaceClient).toContain("useSandpack");
+    expect(sourceWorkspaceClient).toContain("SandpackLayout");
+    expect(sourceWorkspaceClient).toContain("SandpackFileExplorer");
+    expect(sourceWorkspaceClient).toContain("SandpackCodeEditor");
+    expect(sourceWorkspaceClient).toContain("showRunButton={false}");
+    expect(sourceWorkspaceClient).not.toContain("SandpackPreview");
+
+    expect(sourceWorkspaceView).toContain("renderEditor");
+    expect(sourceWorkspaceView).toContain("StudioV2SourceWorkspaceView");
+    expect(sourceWorkspaceClient).toContain("StudioV2SourceWorkspaceView");
+  });
+
+  it("does not activate Sandpack browser execution or CodeSandbox preview services", () => {
+    expect(sourceWorkspaceClient).toContain("autorun: false");
+    expect(sourceWorkspaceClient).toContain("autoReload: false");
+    expect(sourceWorkspaceClient).toContain("skipEval: true");
+    expect(sourceWorkspaceClient).not.toContain("SandpackPreview");
+    expect(sourceWorkspaceClient).not.toContain("Nodebox");
+    expect(sourceWorkspaceClient).not.toContain("OpenInCodeSandbox");
+    expect(sourceWorkspaceClient).not.toContain("bundlerURL");
+  });
+
+  it("reuses the Query workspace shell and shared splitters for editor, results, and tools", () => {
+    expect(webappPackage).toContain('"@window-splitter/react": "1.1.3"');
+    expect(sourceWorkspaceView).toContain('from "~/components/primitives/Resizable"');
+    expect(sourceWorkspaceView).toContain("PageContainer");
+    expect(sourceWorkspaceView).toContain("PageBody");
+    expect(sourceWorkspaceView).toContain('orientation="horizontal"');
+    expect(sourceWorkspaceView).toContain('orientation="vertical"');
+    expect(sourceWorkspaceView).toContain('id="source-editor"');
+    expect(sourceWorkspaceView).toContain('id="source-results"');
+    expect(sourceWorkspaceView).toContain('id="source-utility"');
+    expect(sourceWorkspaceView).toContain('data-testid="flowcordia-source-lower-panel"');
+    expect(sourceWorkspaceView).toContain('value="output"');
+    expect(sourceWorkspaceView).toContain('value="logs"');
+    expect(sourceWorkspaceView).toContain('value="problems"');
+    expect(sourceWorkspaceView).toContain("hasActionableProblems");
+    expect(sourceWorkspaceView).toContain("Run the workflow to inspect its output.");
+    expect(sourceWorkspaceView).toContain("No logs yet.");
+    expect(sourceWorkspaceView).toContain("No problems.");
+  });
+
+  it("does not show a pretend terminal when no terminal runtime is attached", () => {
+    expect(sourceWorkspaceView).not.toContain('value="terminal"');
+    expect(sourceWorkspaceView).not.toContain("Terminal becomes available");
+  });
+
+  it("keeps test input, runtime context, and dependencies in the Query-style utility panel", () => {
+    expect(sourceWorkspaceView).toContain('value="input"');
+    expect(sourceWorkspaceView).toContain('value="context"');
+    expect(sourceWorkspaceView).toContain('value="packages"');
+    expect(sourceWorkspaceView).toContain("Test payload");
+    expect(sourceWorkspaceView).toContain("ctx.input");
+    expect(sourceWorkspaceView).toContain("ctx.steps");
+    expect(sourceWorkspaceView).toContain("ctx.variables");
+    expect(sourceWorkspaceView).toContain("ctx.credentials");
+    expect(sourceWorkspaceView).toContain('data-testid="flowcordia-source-packages"');
+    expect(sourceWorkspaceView).toContain("Dependencies");
+    expect(sourceWorkspaceView).not.toContain("SandpackFileExplorer");
+    expect(sourceWorkspaceClient).toContain("SandpackFileExplorer");
+  });
+
+  it("reuses CodeMirror lint, search, and Source keyboard behavior for developer feedback", () => {
+    expect(sourceWorkspaceView).toContain('from "@codemirror/lint"');
+    expect(sourceWorkspaceView).toContain('from "@codemirror/search"');
+    expect(sourceWorkspaceView).toContain("lintGutter()");
+    expect(sourceWorkspaceView).toContain("search({ top: true })");
+    expect(sourceWorkspaceView).toContain("keymap.of(searchKeymap)");
+    expect(sourceWorkspaceView).toContain("EditorView.scrollIntoView");
+    expect(sourceWorkspaceView).toContain("isSourceEditorSaveShortcut");
+    expect(sourceWorkspaceView).toContain('tooltip="Save source (Ctrl+S)"');
+    expect(sourceWorkspaceView).toContain('"Test workflow (Cmd/Ctrl+Enter)"');
+  });
+
+  it("persists Source edits through the canonical durable Studio workspace", () => {
+    expect(route).toContain('"data-persistence": "durable-local"');
+    expect(sourceSurface).toContain('data-source-persistence="durable-local"');
+    expect(route).toContain("studioWorkspace={workspace}");
+    expect(route).toContain("onStudioWorkspaceChange={handleWorkspaceChange}");
+    expect(sourceModel).toContain("createStudioV2SourceWorkspaceFromDocument");
+    expect(sourceModel).toContain("storedSourceProject(document)");
+    expect(sourceModel).toContain("workflowSourceText");
+    expect(sourceModel).toContain("workflowSourceProject");
+    expect(route).toContain("sourceProject: command.sourceProject");
+    expect(route).toContain("sourceProject: currentSourceProject");
+    expect(sourceSurface).toContain("dirty={dirty}");
+    expect(sourceSurface).toContain('intent: "source_save"');
+    expect(sourceSurface).toContain("expectedVersion: studioWorkspace.version");
+    expect(sourceWorkspaceView).toContain('aria-label="Save workflow source"');
+    expect(sourceWorkspaceView).toContain('{saving ? "Saving..." : "Save"}');
+  });
+
+  it("reuses Remix navigation guards so unsaved Source edits are not discarded silently", () => {
+    expect(sourceSurface).toContain("unstable_usePrompt");
+    expect(sourceSurface).toContain("useBeforeUnload");
+    expect(sourceSurface).toContain("You have unsaved Source changes. Leave without saving?");
+    expect(sourceSurface).toContain("currentLocation.pathname !== nextLocation.pathname");
+    expect(sourceSurface).toContain('event.returnValue = ""');
+  });
+
+  it("saves dirty Source before running the shared workflow test", () => {
+    expect(sourceSurface).toContain("pendingTestRef.current = true");
+    expect(sourceSurface).toContain('intent: "source_test"');
+    expect(sourceSurface).toContain("beginTest(nextWorkspace.version)");
+    expect(sourceSurface).toContain('data-source-test-runtime="trigger-worker-project"');
+    expect(sourceWorkspaceView).toContain('"Test workflow"');
+  });
+
+  it("runs the complete Source project in a version-locked Trigger.dev worker", () => {
+    expect(route).toContain("executeStudioV2SourceTest");
+    expect(sourceTestContext).toContain("sourceProject.files");
+    expect(sourceTestContext).toContain("...project.dependencies");
+    expect(sourceTestContext).toContain("import runWorkflow from");
+    expect(sourceTestContext).toContain("return runWorkflow");
+    expect(sourceTestContext).toContain("studioV2SourceTestIdentity");
+    expect(sourceTestService).toContain("TriggerTaskService");
+    expect(sourceTestService).toContain("lockToVersion: ready.executionVersion");
+    expect(sourceTestService).toContain("skipPromotion: true");
+    expect(sourceTestService).toContain("STUDIO_V2_SOURCE_TEST_TASK_ID");
+    expect(sourceTestService).toContain("flowcordiaStudioSourceTest");
+    expect(sourceTestService).toContain("runnerVersion: STUDIO_V2_SOURCE_TEST_RUNNER_VERSION");
+    expect(sourceTestService).toContain(
+      "sourceIdentity: studioV2SourceTestIdentity(sourceProject)"
+    );
+    expect(sourceTestService).not.toContain("document: ready.source.document");
+    expect(sourceTestService).toContain("isFinalRunStatus(run.status)");
+    expect(sourceTestService).toContain("conditionallyImportPacket");
+    expect(sourceTestService).toContain("parsePacketAsJson(packet)");
+    expect(sourceTestService).toContain("TaskRunError.safeParse(error)");
+    expect(sourceTestService).not.toContain("parseSourceTestMetadata");
+    expect(sourceTestContext).toContain("credentialReferences");
+  });
+
+  it("offers explicit recovery when Source and Editor change the same node", () => {
+    expect(sourceSurface).toContain("reloadLatestSource");
+    expect(sourceSurface).toContain("keepLocalSourceDraft");
+    expect(sourceSurface).toContain("onReloadLatest: reloadLatestSource");
+    expect(sourceSurface).toContain("onKeepLocalDraft: keepLocalSourceDraft");
+    expect(sourceWorkspaceView).toContain('data-testid="flowcordia-source-conflict"');
+    expect(sourceWorkspaceView).toContain("Reload latest");
+    expect(sourceWorkspaceView).toContain("Keep my draft");
+  });
+
+  it("feeds full workflow output, per-node traces, and failures into the utility rail", () => {
+    expect(sourceSurface).toContain(
+      "setOutput({ runId: data.test.runId, output: execution.output, traces: execution.traces })"
+    );
+    expect(sourceSurface).toContain("failedTrace?.message");
+    expect(sourceSurface).toContain("Flowcordia test runtime");
+    expect(sourceSurface).toContain("trace.status.toLowerCase()");
+    expect(sourceSurface).toContain("logs={logs}");
+    expect(sourceSurface).toContain("output={output}");
+  });
+
+  it("keeps the legacy Source workspace intact as a separate implementation", () => {
+    expect(legacySourceWorkspace).toContain("export function WorkflowSourceWorkspace");
+    expect(sourceWorkspace).toContain("export function StudioV2SourceWorkspace");
+  });
+});

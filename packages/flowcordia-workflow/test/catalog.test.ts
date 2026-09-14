@@ -1,0 +1,67 @@
+import { describe, expect, it } from "vitest";
+import {
+  WORKFLOW_STUDIO_CATALOG_SCHEMA_VERSION,
+  WORKFLOW_STUDIO_NODE_CATALOG,
+  WORKFLOW_STUDIO_TEMPLATE_IDS,
+  workflowStudioNodeCatalogEntry,
+} from "../src/index.js";
+
+describe("Flowcordia approved node catalog", () => {
+  it("publishes unique, versioned, visually addable entries", () => {
+    expect(WORKFLOW_STUDIO_CATALOG_SCHEMA_VERSION).toBe("0.1");
+    expect(WORKFLOW_STUDIO_NODE_CATALOG.map((entry) => entry.id)).toEqual(
+      WORKFLOW_STUDIO_TEMPLATE_IDS
+    );
+    expect(new Set(WORKFLOW_STUDIO_NODE_CATALOG.map((entry) => entry.catalogId)).size).toBe(
+      WORKFLOW_STUDIO_NODE_CATALOG.length
+    );
+    expect(WORKFLOW_STUDIO_NODE_CATALOG.every((entry) => entry.catalogVersion === 1)).toBe(true);
+  });
+
+  it("publishes HTTP as an approved executable credential-aware action", () => {
+    expect(workflowStudioNodeCatalogEntry("http_action")).toMatchObject({
+      catalogId: "flowcordia.action.http-request",
+      releaseStage: "approved",
+      category: "action",
+      operation: "action.http",
+      capabilities: expect.arrayContaining([
+        "structural_preview",
+        "live_execution",
+        "credential_references",
+        "governed_code_generation",
+      ]),
+    });
+  });
+
+  it("publishes deterministic data mapping as approved logic", () => {
+    expect(workflowStudioNodeCatalogEntry("data_map")).toMatchObject({
+      catalogId: "flowcordia.data.map",
+      releaseStage: "approved",
+      category: "logic",
+      operation: "data.map",
+      capabilities: ["structural_preview", "live_execution", "governed_code_generation"],
+    });
+  });
+
+  it("publishes signed webhooks as an approved executable production trigger", () => {
+    expect(workflowStudioNodeCatalogEntry("webhook_trigger")).toMatchObject({
+      catalogId: "flowcordia.trigger.webhook",
+      releaseStage: "approved",
+      category: "trigger",
+      operation: "trigger.webhook",
+      capabilities: [
+        "structural_preview",
+        "live_execution",
+        "credential_references",
+        "governed_code_generation",
+        "production_binding",
+      ],
+    });
+  });
+
+  it("keeps unrestricted repository code out of the approved visual catalog", () => {
+    expect(WORKFLOW_STUDIO_NODE_CATALOG.some((entry) => entry.operation === "code.task")).toBe(
+      false
+    );
+  });
+});
