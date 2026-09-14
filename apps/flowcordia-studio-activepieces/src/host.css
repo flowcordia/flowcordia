@@ -1,0 +1,540 @@
+html,
+body,
+#root,
+#root > div {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+/* Flowcordia owns the Studio presentation; the vendored engine owns workflow behavior. */
+.flowcordia-studio-document {
+  --background: #ffffff;
+  --foreground: #181818;
+  --popover: #ffffff;
+  --popover-foreground: #181818;
+  --card: #ffffff;
+  --card-foreground: #181818;
+  --primary: 0 0% 8%;
+  --primary-100: 0 0% 94%;
+  --primary-300: 0 0% 28%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: #262626;
+  --secondary-foreground: #ffffff;
+  --muted: #f4f4f4;
+  --muted-foreground: #6c6c6c;
+  --accent: #ededed;
+  --accent-foreground: #181818;
+  --border: #dedede;
+  --input: #d4d4d4;
+  --ring: #181818;
+  --sidebar-background: #f7f7f7;
+  --sidebar-foreground: #181818;
+  --sidebar-primary: 0 0% 8%;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #ededed;
+  --sidebar-accent-foreground: #181818;
+  --sidebar-border: #dedede;
+  --sidebar-ring: #777777;
+  --builder-background: #f7f7f7;
+  --builder-background-pattern: #bbbbbb;
+  --add-button-shadow: 0 0 0 5px rgb(24 24 24 / 7%);
+  --fc-surface: #ffffff;
+  --fc-surface-raised: #ffffff;
+  --fc-surface-muted: #f7f7f7;
+  --fc-surface-strong: #ededed;
+  --fc-canvas: #f7f7f7;
+  --fc-border: #dedede;
+  --fc-border-strong: #a7a7a7;
+  --fc-text: #181818;
+  --fc-text-muted: #6c6c6c;
+  --fc-shadow: 0 12px 30px rgb(24 24 24 / 8%);
+  --fc-shadow-large: 0 24px 60px rgb(24 24 24 / 16%);
+  background: var(--fc-surface);
+  color: var(--fc-text);
+  color-scheme: light;
+  font-family: "Segoe UI Variable", "Segoe UI", sans-serif;
+  letter-spacing: 0;
+}
+
+.flowcordia-studio-document.dark {
+  --background: #171717;
+  --foreground: #f5f5f5;
+  --popover: #202020;
+  --popover-foreground: #f5f5f5;
+  --card: #202020;
+  --card-foreground: #f5f5f5;
+  --primary: 0 0% 96%;
+  --primary-100: 0 0% 18%;
+  --primary-300: 0 0% 78%;
+  --primary-foreground: 0 0% 7%;
+  --secondary: #f5f5f5;
+  --secondary-foreground: #171717;
+  --muted: #292929;
+  --muted-foreground: #a8a8a8;
+  --accent: #303030;
+  --accent-foreground: #f5f5f5;
+  --border: #393939;
+  --input: #444444;
+  --ring: #f5f5f5;
+  --sidebar-background: #202020;
+  --sidebar-foreground: #f5f5f5;
+  --sidebar-primary: 0 0% 96%;
+  --sidebar-primary-foreground: #171717;
+  --sidebar-accent: #303030;
+  --sidebar-accent-foreground: #f5f5f5;
+  --sidebar-border: #393939;
+  --sidebar-ring: #aaaaaa;
+  --builder-background: #151515;
+  --builder-background-pattern: #555555;
+  --add-button-shadow: 0 0 0 5px rgb(255 255 255 / 8%);
+  --fc-surface: #171717;
+  --fc-surface-raised: #202020;
+  --fc-surface-muted: #1b1b1b;
+  --fc-surface-strong: #303030;
+  --fc-canvas: #151515;
+  --fc-border: #393939;
+  --fc-border-strong: #777777;
+  --fc-text: #f5f5f5;
+  --fc-text-muted: #a8a8a8;
+  --fc-shadow: 0 14px 34px rgb(0 0 0 / 30%);
+  --fc-shadow-large: 0 26px 64px rgb(0 0 0 / 48%);
+  color-scheme: dark;
+}
+
+.flowcordia-studio-frame {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--fc-surface);
+  color: var(--fc-text);
+}
+
+.flowcordia-studio-document *,
+.flowcordia-studio-document *::before,
+.flowcordia-studio-document *::after {
+  letter-spacing: 0;
+}
+
+/* Studio command bar */
+.flowcordia-studio-document [data-flowcordia-region="workflow-header"] {
+  z-index: 60;
+  border-bottom: 1px solid var(--fc-border);
+  background: var(--fc-surface);
+}
+
+.flowcordia-studio-document [data-flowcordia-region="workflow-header-inner"] {
+  height: 52px !important;
+}
+
+.flowcordia-studio-document [data-flowcordia-region="workflow-header-inner"] > div {
+  min-height: 52px;
+  padding-block: 0;
+  border: 0;
+  background: var(--fc-surface);
+  box-shadow: none;
+}
+
+.flowcordia-studio-document
+  [data-flowcordia-region="workflow-header-inner"]
+  [data-slot="breadcrumb-page"] {
+  color: var(--fc-text);
+  font-weight: 650;
+}
+
+.flowcordia-studio-document [data-slot="button"] {
+  min-height: 32px;
+  border-radius: 6px;
+  font-weight: 600;
+  box-shadow: none;
+  transition:
+    background-color 130ms ease,
+    border-color 130ms ease,
+    color 130ms ease,
+    transform 130ms ease;
+}
+
+.flowcordia-studio-document [data-slot="button"][data-variant="default"] {
+  border-color: var(--fc-text);
+  background: var(--fc-text);
+  color: var(--fc-surface);
+}
+
+.flowcordia-studio-document [data-slot="button"][data-variant="default"]:hover {
+  opacity: 0.88;
+}
+
+.flowcordia-studio-document [data-slot="button"][data-variant="outline"] {
+  border-color: var(--fc-border);
+  background: var(--fc-surface-raised);
+  color: var(--fc-text);
+}
+
+.flowcordia-studio-document [data-slot="button"][data-variant="outline"]:hover,
+.flowcordia-studio-document [data-slot="button"][data-variant="ghost"]:hover {
+  background: var(--fc-surface-strong);
+  color: var(--fc-text);
+}
+
+.flowcordia-studio-document [data-slot="button"]:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.flowcordia-studio-document :is(input, textarea, select) {
+  border-color: var(--fc-border);
+  border-radius: 6px;
+  background: var(--fc-surface-raised);
+  color: var(--fc-text);
+}
+
+.flowcordia-studio-document :is(input, textarea, select):focus-visible {
+  border-color: var(--fc-text);
+  outline: 2px solid color-mix(in srgb, var(--fc-text) 15%, transparent);
+  outline-offset: 1px;
+}
+
+.flowcordia-studio-document
+  :is(
+    [data-slot="popover-content"],
+    [data-slot="dropdown-menu-content"],
+    [data-slot="context-menu-content"],
+    [data-slot="dialog-content"],
+    [data-slot="sheet-content"]
+  ) {
+  border-color: var(--fc-border);
+  border-radius: 8px;
+  background: var(--fc-surface-raised);
+  color: var(--fc-text);
+  box-shadow: var(--fc-shadow-large);
+}
+
+/* Workflow canvas */
+.flowcordia-studio-document [data-flowcordia-region="canvas"],
+.flowcordia-studio-document .react-flow {
+  background: var(--fc-canvas);
+}
+
+.flowcordia-studio-document [data-flowcordia-region="canvas"] {
+  isolation: isolate;
+}
+
+.flowcordia-studio-document .react-flow {
+  --xy-edge-stroke: var(--fc-border-strong) !important;
+  --xy-selection-border-default: 1px solid var(--fc-text) !important;
+  --xy-selection-background-color-default: color-mix(
+    in srgb,
+    var(--fc-text) 5%,
+    transparent
+  ) !important;
+}
+
+.flowcordia-studio-document .react-flow__background {
+  opacity: 0.32;
+}
+
+.flowcordia-studio-document .react-flow__edge-path {
+  stroke-width: 1.4;
+}
+
+.flowcordia-studio-document .react-flow__edge.selected .react-flow__edge-path {
+  stroke: var(--fc-text);
+  stroke-width: 1.9;
+}
+
+/* Step cards are rendered by Flowcordia components, not restyled opaque markup. */
+.flowcordia-studio-document .react-flow__node [data-flowcordia-node] {
+  overflow: visible;
+  border: 1px solid var(--fc-border);
+  border-radius: 8px;
+  background: var(--fc-surface-raised);
+  box-shadow: 0 2px 8px rgb(24 24 24 / 5%);
+  transition:
+    border-color 140ms ease,
+    box-shadow 140ms ease,
+    transform 140ms ease;
+}
+
+.flowcordia-studio-document .react-flow__node [data-flowcordia-node]::before {
+  position: absolute;
+  z-index: 2;
+  inset: 0 auto 0 0;
+  width: 4px;
+  border-radius: 7px 0 0 7px;
+  background: var(--fc-border-strong);
+  content: "";
+}
+
+.flowcordia-studio-document .react-flow__node [data-flowcordia-node]:hover {
+  border-color: var(--fc-border-strong);
+  box-shadow: var(--fc-shadow);
+  transform: translateY(-1px);
+}
+
+.flowcordia-studio-document .react-flow__node.selected [data-flowcordia-node],
+.flowcordia-studio-document .react-flow__node [data-flowcordia-node].border-primary {
+  border-color: var(--fc-text);
+  box-shadow:
+    0 0 0 1px var(--fc-text),
+    var(--fc-shadow);
+}
+
+.flowcordia-studio-document .react-flow__node.selected [data-flowcordia-node]::before,
+.flowcordia-studio-document .react-flow__node [data-flowcordia-node].border-primary::before {
+  background: var(--fc-text);
+}
+
+.flowcordia-studio-document [data-flowcordia-region="step-card-content"] {
+  padding: 7px 8px 7px 10px;
+}
+
+.flowcordia-studio-document [data-flowcordia-region="step-card-content"] .text-sm {
+  color: var(--fc-text);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 15px;
+}
+
+.flowcordia-studio-document [data-flowcordia-region="step-card-content"] .text-xs {
+  color: var(--fc-text-muted);
+  font-size: 10px;
+  line-height: 13px;
+}
+
+.flowcordia-studio-document [data-flowcordia-native-node] {
+  border-color: var(--fc-border);
+  background: var(--fc-surface-strong);
+}
+
+.flowcordia-studio-document .react-flow__node [data-flowcordia-node] img {
+  filter: saturate(0.96) contrast(1.02);
+}
+
+.flowcordia-studio-document [id*="big-add-button"] button,
+.flowcordia-studio-document .react-flow__edge button {
+  border-color: var(--fc-border-strong);
+  background: var(--fc-surface-raised);
+  color: var(--fc-text);
+  box-shadow: 0 2px 7px rgb(24 24 24 / 7%);
+}
+
+.flowcordia-studio-document [id*="big-add-button"] button:hover,
+.flowcordia-studio-document .react-flow__edge button:hover {
+  border-color: var(--fc-text);
+  background: var(--fc-text);
+  color: var(--fc-surface);
+}
+
+/* Canvas command dock */
+.flowcordia-studio-document [data-flowcordia-region="canvas-controls"] {
+  bottom: 12px;
+}
+
+.flowcordia-studio-document [data-flowcordia-region="canvas-controls"] > div:not(.grow) {
+  gap: 2px;
+  padding: 5px;
+  border: 1px solid var(--fc-border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--fc-surface-raised) 96%, transparent);
+  box-shadow: var(--fc-shadow);
+  backdrop-filter: blur(8px);
+}
+
+.flowcordia-studio-document [data-flowcordia-region="canvas-controls"] [data-slot="button"] {
+  width: 32px;
+  height: 32px;
+}
+
+/* Node library */
+.flowcordia-studio-document [data-flowcordia-region="node-library"] {
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100dvh - 76px);
+  width: min(780px, calc(100vw - 24px)) !important;
+  overflow: hidden;
+  border: 1px solid var(--fc-border);
+  background: var(--fc-surface-raised);
+}
+
+.flowcordia-studio-document [data-flowcordia-region="node-library-header"] {
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--fc-border);
+  background: var(--fc-surface-raised);
+}
+
+.flowcordia-studio-document
+  [data-flowcordia-region="node-library"]
+  [data-testid="pieces-search-input"] {
+  height: 40px;
+  margin: 6px 12px 2px;
+  width: calc(100% - 24px);
+  border-color: var(--fc-border);
+  background: var(--fc-surface-muted);
+  font-size: 13px;
+}
+
+.flowcordia-studio-document [data-flowcordia-region="node-library-tabs"] {
+  min-height: 44px;
+  gap: 2px;
+  padding: 4px 10px 7px;
+  background: var(--fc-surface-raised);
+}
+
+.flowcordia-studio-document [data-flowcordia-region="node-library-tabs"] button {
+  height: 32px;
+  min-height: 32px;
+  border: 1px solid transparent;
+  color: var(--fc-text-muted);
+}
+
+.flowcordia-studio-document
+  [data-flowcordia-region="node-library-tabs"]
+  button[data-state="active"] {
+  border-color: var(--fc-border);
+  background: var(--fc-surface-strong);
+  color: var(--fc-text);
+}
+
+.flowcordia-studio-document [data-flowcordia-region="node-library-list"] {
+  width: 310px;
+  min-width: 310px;
+  padding: 7px;
+  background: var(--fc-surface-muted);
+}
+
+.flowcordia-studio-document [data-flowcordia-region="node-library-list"] [data-testid] {
+  border: 1px solid transparent;
+  border-radius: 6px;
+}
+
+.flowcordia-studio-document [data-flowcordia-region="node-library-list"] [data-testid]:hover,
+.flowcordia-studio-document [data-flowcordia-region="node-library-list"] [data-testid].bg-accent {
+  border-color: var(--fc-border);
+  background: var(--fc-surface-raised);
+}
+
+.flowcordia-studio-document [data-flowcordia-region="node-library-actions"] {
+  flex: 1 1 auto;
+  background: var(--fc-surface-raised);
+}
+
+.flowcordia-studio-document
+  [data-flowcordia-region="node-library-actions"]
+  [class*="cursor-pointer"] {
+  margin: 4px 7px;
+  width: calc(100% - 14px);
+  border: 1px solid transparent;
+  border-radius: 6px;
+}
+
+.flowcordia-studio-document
+  [data-flowcordia-region="node-library-actions"]
+  [class*="cursor-pointer"]:hover {
+  border-color: var(--fc-border);
+  background: var(--fc-surface-muted);
+}
+
+.flowcordia-studio-document [data-flowcordia-region="node-library-empty"] {
+  color: var(--fc-text-muted);
+}
+
+/* Step inspector */
+.flowcordia-studio-document [data-flowcordia-region="inspector"] {
+  border-left: 1px solid var(--fc-border);
+  background: var(--fc-surface-raised);
+  box-shadow: -10px 0 30px rgb(24 24 24 / 4%);
+}
+
+.flowcordia-studio-document [data-flowcordia-region="step-settings"] {
+  background: var(--fc-surface-raised);
+}
+
+.flowcordia-studio-document [data-flowcordia-region="step-settings"] > div:first-child {
+  min-height: 52px;
+  border-bottom: 1px solid var(--fc-border);
+  background: var(--fc-surface-raised);
+}
+
+.flowcordia-studio-document [data-flowcordia-region="inspector-tabs"] > [role="tablist"] {
+  border-bottom-color: var(--fc-border);
+  background: var(--fc-surface-raised);
+}
+
+.flowcordia-studio-document [data-flowcordia-region="inspector-tabs"] [role="tab"] {
+  position: relative;
+  border: 0;
+  background: transparent;
+  color: var(--fc-text-muted);
+  box-shadow: none;
+}
+
+.flowcordia-studio-document
+  [data-flowcordia-region="inspector-tabs"]
+  [role="tab"][data-state="active"] {
+  color: var(--fc-text);
+}
+
+.flowcordia-studio-document
+  [data-flowcordia-region="inspector-tabs"]
+  [role="tab"][data-state="active"]::after {
+  position: absolute;
+  right: 10px;
+  bottom: 0;
+  left: 10px;
+  height: 2px;
+  background: var(--fc-text);
+  content: "";
+}
+
+.flowcordia-studio-document [data-flowcordia-region="step-settings"] label {
+  color: var(--fc-text);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.flowcordia-studio-document [data-flowcordia-region="setup-integration"] > div:last-child,
+.flowcordia-studio-document [data-flowcordia-region="setup-connection"] > div:last-child {
+  background: var(--fc-surface-muted);
+}
+
+.flowcordia-studio-document [data-slot="card"] {
+  border-color: var(--fc-border);
+  border-radius: 7px;
+  background: var(--fc-surface-raised);
+  box-shadow: none;
+}
+
+.flowcordia-studio-document [data-slot="card"]:hover {
+  border-color: var(--fc-border-strong);
+}
+
+.flowcordia-studio-document ::selection {
+  background: var(--fc-text);
+  color: var(--fc-surface);
+}
+
+@media (max-width: 720px) {
+  .flowcordia-studio-document [data-flowcordia-region="workflow-header-inner"] > div {
+    padding-inline: 8px;
+  }
+
+  .flowcordia-studio-document [data-flowcordia-region="node-library"] {
+    width: calc(100vw - 16px) !important;
+  }
+
+  .flowcordia-studio-document [data-flowcordia-region="node-library-list"] {
+    width: 100%;
+    min-width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flowcordia-studio-document *,
+  .flowcordia-studio-document *::before,
+  .flowcordia-studio-document *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}

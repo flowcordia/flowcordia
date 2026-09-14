@@ -1,0 +1,34 @@
+{
+  "name": "@flowcordia/github-workflows",
+  "version": "0.1.0",
+  "description": "Installation-scoped GitHub storage for validated Flowcordia workflows",
+  "private": true,
+  "type": "module",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "engines": {
+    "node": ">=18.20.0"
+  },
+  "exports": {
+    ".": {
+      "@triggerdotdev/source": "./src/index.ts",
+      "import": "./dist/src/index.js",
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    }
+  },
+  "scripts": {
+    "clean": "rimraf dist",
+    "build": "pnpm run clean && tsc -p tsconfig.build.json",
+    "dev": "tsc --watch -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.src.json --noEmit",
+    "test": "vitest"
+  },
+  "dependencies": {
+    "@flowcordia/foundation": "workspace:*",
+    "@flowcordia/workflow": "workspace:*"
+  },
+  "devDependencies": {
+    "rimraf": "6.0.1"
+  }
+}

@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Flowcordia documentation
+    url: https://flowcordia.com/docs
+    about: Installation and product documentation
+  - name: Flowcordia contact
+    url: https://flowcordia.com/contact
+    about: General questions; never include secrets or vulnerability details

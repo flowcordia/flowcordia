@@ -1,0 +1,630 @@
+import type { WorkflowDefinition, WorkflowRuntimePolicy } from "@flowcordia/workflow";
+import { describe, expect, it, vi } from "vitest";
+import {
+  compileWorkflowToTriggerTask,
+  createPreviewRuntimeAdapters,
+  createTriggerRuntimeAdapters,
+  executeFlowcordiaWorkflow,
+} from "../src/index.js";
+
+function workflow(): WorkflowDefinition {
+  return {
+    schemaVersion: "0.1",
+    id: "lead_intake",
+    name: "Lead intake",
+    nodes: [
+      {
+        id: "manual_trigger",
+        kind: "trigger",
+        operation: "trigger.manual",
+        position: { x: 0, y: 0 },
+        configuration: {},
+      },
+      {
+        id: "crm_request",
+        kind: "action",
+        operation: "action.http",
+        position: { x: 280, y: 0 },
+        configuration: { method: "POST", url: "https://example.test/leads" },
+      },
+      {
+        id: "output",
+        kind: "output",
+        operation: "output.return",
+        position: { x: 560, y: 0 },
+        configuration: {},
+      },
+    ],
+    edges: [
+      { id: "trigger_to_crm", source: "manual_trigger", target: "crm_request" },
+      { id: "crm_to_output", source: "crm_request", target: "output" },
+    ],
+  };
+}
+
+describe("Flowcordia runtime", () => {
+  it("runs a safe preview without making the HTTP request", async () => {
+    const observed: string[] = [];
+    const result = await executeFlowcordiaWorkflow(
+      workflow(),
+      { leadId: "lead_123" },
+      createPreviewRuntimeAdapters(),
+      { onTrace: (trace) => observed.push(`${trace.nodeId}:${trace.status}`) }
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.traces.map((trace) => [trace.nodeId, trace.status])).toEqual([
+      ["manual_trigger", "SUCCEEDED"],
+      ["crm_request", "SUCCEEDED"],
+      ["output", "SUCCEEDED"],
+    ]);
+    expect(result.output).toMatchObject({
+      simulated: true,
+      request: { method: "POST", url: "https://example.test/leads" },
+    });
+    expect(observed).toEqual([
+      "manual_trigger:SUCCEEDED",
+      "crm_request:SUCCEEDED",
+      "output:SUCCEEDED",
+    ]);
+  });
+
+  it("does not let a trace observer change workflow behavior", async () => {
+    const result = await executeFlowcordiaWorkflow(
+      workflow(),
+      { leadId: "lead_123" },
+      createPreviewRuntimeAdapters(),
+      {
+        onTrace() {
+          throw new Error("metadata transport unavailable");
+        },
+      }
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.traces).toHaveLength(3);
+  });
+
+  it("executes a bounded loop body for every resolved item", async () => {
+    const source = workflow();
+    const body: WorkflowDefinition = {
+      schemaVersion: "0.1",
+      id: "lead_loop_body",
+      name: "Lead loop body",
+      nodes: [
+        {
+          id: "loop_iteration",
+          kind: "trigger",
+          operation: "trigger.manual",
+          position: { x: 0, y: 0 },
+          configuration: {},
+        },
+        {
+          id: "iteration_output",
+          kind: "output",
+          operation: "output.return",
+          position: { x: 280, y: 0 },
+          configuration: {},
+        },
+      ],
+      edges: [
+        {
+          id: "iteration_to_output",
+          source: "loop_iteration",
+          target: "iteration_output",
+        },
+      ],
+    };
+    source.nodes[1] = {
+      id: "lead_loop",
+      kind: "control",
+      operation: "control.loop",
+      position: { x: 280, y: 0 },
+      configuration: {
+        itemsExpression: "{{trigger.output.items}}",
+        maxIterations: 3,
+        body,
+      },
+    };
+    source.edges[0]!.target = "lead_loop";
+    source.edges[1]!.source = "lead_loop";
+
+    const result = await executeFlowcordiaWorkflow(
+      source,
+      { items: [{ id: "a" }, { id: "b" }] },
+      createPreviewRuntimeAdapters()
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.output).toEqual({
+      item: { id: "b" },
+      index: 1,
+      iterations: [
+        { item: { id: "a" }, index: 0, output: { item: { id: "a" }, index: 0 } },
+        { item: { id: "b" }, index: 1, output: { item: { id: "b" }, index: 1 } },
+      ],
+    });
+    expect(result.traces.map((trace) => trace.nodeId)).toEqual([
+      "manual_trigger",
+      "lead_loop[0].loop_iteration",
+      "lead_loop[0].iteration_output",
+      "lead_loop[1].loop_iteration",
+      "lead_loop[1].iteration_output",
+      "lead_loop",
+      "output",
+    ]);
+  });
+
+  it("fails before executing a loop that exceeds its configured bound", async () => {
+    const source = workflow();
+    source.nodes[1] = {
+      id: "lead_loop",
+      kind: "control",
+      operation: "control.loop",
+      position: { x: 280, y: 0 },
+      configuration: {
+        itemsExpression: "{{trigger.output.items}}",
+        maxIterations: 1,
+        body: {
+          schemaVersion: "0.1",
+          id: "lead_loop_body",
+          name: "Lead loop body",
+          nodes: [
+            {
+              id: "loop_iteration",
+              kind: "trigger",
+              operation: "trigger.manual",
+              position: { x: 0, y: 0 },
+              configuration: {},
+            },
+          ],
+          edges: [],
+        },
+      },
+    };
+    source.edges[0]!.target = "lead_loop";
+    source.edges[1]!.source = "lead_loop";
+
+    const result = await executeFlowcordiaWorkflow(
+      source,
+      { items: [1, 2] },
+      createPreviewRuntimeAdapters()
+    );
+
+    expect(result).toMatchObject({ success: false, failedNodeId: "lead_loop" });
+    expect(result.traces.at(-1)?.message).toContain("1-iteration limit");
+  });
+
+  it("compiles the same workflow into a deterministic Trigger.dev task", () => {
+    const first = compileWorkflowToTriggerTask(workflow());
+    const second = compileWorkflowToTriggerTask(workflow());
+    expect(first).toEqual(second);
+    expect(first.success).toBe(true);
+    if (!first.success) return;
+    expect(first.artifact.taskId).toBe("flowcordia-lead_intake");
+    expect(first.artifact.source).toContain("executeFlowcordiaWorkflow");
+    expect(first.artifact.source).toContain("await wait.for");
+    expect(first.artifact.source).toContain('metadata.set("flowcordia"');
+    expect(first.artifact.source).toContain("trace.message");
+    expect(first.artifact.source).not.toContain("trace.input");
+    expect(first.artifact.source).not.toContain("trace.output");
+    expect(first.artifact.orderedNodeIds).toEqual(["manual_trigger", "crm_request", "output"]);
+  });
+
+  it("executes and compiles durable Delay Until nodes", async () => {
+    const source = workflow();
+    source.nodes[1] = {
+      id: "wait_until",
+      kind: "control",
+      operation: "control.wait",
+      position: { x: 280, y: 0 },
+      configuration: {
+        mode: "until",
+        untilTimestamp: "2026-09-02T09:30:00.000Z",
+      },
+    };
+    source.edges[0]!.target = "wait_until";
+    source.edges[1]!.source = "wait_until";
+    const wait = vi.fn(async () => undefined);
+
+    const execution = await executeFlowcordiaWorkflow(
+      source,
+      { leadId: "lead_123" },
+      createTriggerRuntimeAdapters({
+        wait,
+        authorizeHttp: () => true,
+      })
+    );
+
+    expect(execution.success).toBe(true);
+    expect(wait).toHaveBeenCalledWith({
+      mode: "until",
+      untilTimestamp: "2026-09-02T09:30:00.000Z",
+    });
+
+    const compiled = compileWorkflowToTriggerTask(source);
+    expect(compiled.success).toBe(true);
+    if (!compiled.success) return;
+    expect(compiled.artifact.source).toContain("await wait.until");
+    expect(compiled.artifact.source).toContain("new Date(configuration.untilTimestamp)");
+  });
+
+  it("binds schedule triggers to production-only declarative schedules", () => {
+    const source = workflow();
+    source.nodes[0]!.operation = "trigger.schedule";
+    source.nodes[0]!.configuration = {
+      cron: "0 9 * * 1-5",
+      timezone: "Asia/Karachi",
+    };
+
+    const result = compileWorkflowToTriggerTask(source);
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.artifact.source).toContain(
+      'import { metadata, schedules, wait } from "@trigger.dev/sdk";'
+    );
+    expect(result.artifact.source).toContain("export const lead_intakeTask = schedules.task({");
+    expect(result.artifact.source).toContain('pattern: "0 9 * * 1-5"');
+    expect(result.artifact.source).toContain('timezone: "Asia/Karachi"');
+    expect(result.artifact.source).toContain('environments: ["PRODUCTION"]');
+    expect(result.artifact.source).toContain(
+      "const flowcordiaPayload = JSON.parse(JSON.stringify(payload)) as JsonValue;"
+    );
+    expect(result.artifact.triggerOperations).toEqual(["trigger.schedule"]);
+    expect(result.artifact.warnings).toEqual([]);
+  });
+
+  it("binds API triggers to the authenticated platform task endpoint", () => {
+    const source = workflow();
+    source.nodes[0]!.operation = "trigger.api";
+    source.nodes[0]!.configuration = {
+      requireIdempotencyKey: true,
+      idempotencyKeyTTLSeconds: 7_200,
+      queueTTLSeconds: 900,
+    };
+
+    const result = compileWorkflowToTriggerTask(source);
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.artifact.taskId).toBe("flowcordia-lead_intake");
+    expect(result.artifact.triggerBinding).toEqual({
+      kind: "authenticated_api",
+      method: "POST",
+      path: "/api/v1/tasks/flowcordia-lead_intake/trigger",
+      authentication: "project_access_token",
+      request: {
+        payloadField: "payload",
+        optionsField: "options",
+        idempotency: {
+          keyPath: "options.idempotencyKey",
+          required: true,
+          ttlPath: "options.idempotencyKeyTTL",
+          ttl: "7200s",
+          scope: "task_environment",
+        },
+        queueTTL: {
+          path: "options.ttl",
+          value: "900s",
+          semantics: "expire_before_start",
+        },
+      },
+    });
+    expect(result.artifact.warnings).toEqual([]);
+  });
+
+  it("does not misrepresent a public webhook as an authenticated API binding", () => {
+    const source = workflow();
+    source.nodes[0]!.operation = "trigger.webhook";
+    source.nodes[0]!.configuration = { method: "POST", path: "/orders" };
+
+    const result = compileWorkflowToTriggerTask(source);
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.artifact.triggerBinding).toBeNull();
+    expect(result.artifact.warnings).toEqual([
+      "trigger.webhook requires a deployment binding before it can receive production events.",
+    ]);
+  });
+
+  it("binds a trigger retry policy to whole-workflow task retries", () => {
+    const source = workflow();
+    source.nodes[0]!.runtime = {
+      retry: { maxAttempts: 4, minTimeoutMs: 500, maxTimeoutMs: 5000, factor: 2 },
+    };
+
+    const result = compileWorkflowToTriggerTask(source);
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.artifact.source).toContain(`  retry: {
+    maxAttempts: 4,
+    minTimeoutInMs: 500,
+    maxTimeoutInMs: 5000,
+    factor: 2,
+    randomize: true,
+  },`);
+  });
+
+  it("binds trigger execution policy to the generated whole-workflow task", () => {
+    const source = workflow();
+    source.nodes[0]!.runtime = {
+      queue: "customer-events/high-priority",
+      machine: "medium-1x",
+      maxDurationSeconds: 300,
+    };
+
+    const result = compileWorkflowToTriggerTask(source);
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.artifact.source).toContain('  queue: { name: "customer-events/high-priority" },');
+    expect(result.artifact.source).toContain('  machine: "medium-1x",');
+    expect(result.artifact.source).toContain("  maxDuration: 300,");
+  });
+
+  it("rejects retry policies that cannot be executed at node scope", () => {
+    const source = workflow();
+    source.nodes[1]!.runtime = { retry: { maxAttempts: 3 } };
+
+    expect(compileWorkflowToTriggerTask(source)).toMatchObject({
+      success: false,
+      issues: [expect.objectContaining({ code: "invalid_configuration", nodeId: "crm_request" })],
+    });
+  });
+
+  it.each<[string, WorkflowRuntimePolicy]>([
+    ["queue", { queue: "customer-events" }],
+    ["machine", { machine: "small-1x" }],
+    ["maximum duration", { maxDurationSeconds: 30 }],
+    ["concurrency key", { concurrencyKey: "customer" }],
+  ])("rejects a non-trigger %s policy instead of ignoring it", (_label, runtime) => {
+    const source = workflow();
+    source.nodes[1]!.runtime = runtime;
+
+    expect(compileWorkflowToTriggerTask(source)).toMatchObject({
+      success: false,
+      issues: [expect.objectContaining({ code: "invalid_configuration", nodeId: "crm_request" })],
+    });
+  });
+
+  it.each<[string, WorkflowRuntimePolicy]>([
+    ["sanitized queue name", { queue: "customer events" }],
+    ["truncated queue name", { queue: "a".repeat(129) }],
+    ["unknown machine preset", { machine: "small" }],
+    ["too-short maximum duration", { maxDurationSeconds: 4 }],
+    ["unbounded maximum duration", { maxDurationSeconds: 2_147_483_647 }],
+    ["invocation-time concurrency key", { concurrencyKey: "customer" }],
+  ])("rejects an unsafe or unbound trigger %s", (_label, runtime) => {
+    const source = workflow();
+    source.nodes[0]!.runtime = runtime;
+
+    expect(compileWorkflowToTriggerTask(source)).toMatchObject({
+      success: false,
+      issues: [
+        expect.objectContaining({ code: "invalid_configuration", nodeId: "manual_trigger" }),
+      ],
+    });
+  });
+
+  it.each([
+    { maxAttempts: 0 },
+    { maxAttempts: 11 },
+    { minTimeoutMs: 86_400_001 },
+    { maxTimeoutMs: 86_400_001 },
+    { factor: 10.1 },
+  ])("rejects an unsafe whole-workflow retry policy %#", (retry) => {
+    const source = workflow();
+    source.nodes[0]!.runtime = { retry };
+
+    expect(compileWorkflowToTriggerTask(source)).toMatchObject({
+      success: false,
+      issues: [
+        expect.objectContaining({ code: "invalid_configuration", nodeId: "manual_trigger" }),
+      ],
+    });
+  });
+
+  it.each([
+    ["cron", "60 * * * *", "UTC"],
+    ["cron with seconds", "0 0 9 * * *", "UTC"],
+    ["timezone", "0 9 * * *", "Not/A_Timezone"],
+  ])("rejects an invalid schedule %s before deployment", (_label, cron, timezone) => {
+    const source = workflow();
+    source.nodes[0]!.operation = "trigger.schedule";
+    source.nodes[0]!.configuration = { cron, timezone };
+
+    expect(compileWorkflowToTriggerTask(source)).toMatchObject({
+      success: false,
+      issues: [
+        expect.objectContaining({
+          code: "invalid_configuration",
+          nodeId: "manual_trigger",
+        }),
+      ],
+    });
+  });
+
+  it("blocks invalid runtime configuration before deployment", () => {
+    const source = workflow();
+    source.nodes[1]!.configuration = { method: "POST", url: "" };
+    const result = compileWorkflowToTriggerTask(source);
+    expect(result).toMatchObject({
+      success: false,
+      issues: [{ code: "invalid_configuration", nodeId: "crm_request" }],
+    });
+  });
+
+  it("blocks inline secrets before proposal publication", () => {
+    const source = workflow();
+    source.nodes[1]!.configuration.apiKey = "secret-value";
+    const result = compileWorkflowToTriggerTask(source);
+    expect(result).toMatchObject({
+      success: false,
+      issues: [{ code: "invalid_configuration", nodeId: "crm_request" }],
+    });
+  });
+
+  it("executes only the matching structured condition branch", async () => {
+    const source = workflow();
+    source.nodes.splice(1, 0, {
+      id: "qualified",
+      kind: "control",
+      operation: "control.condition",
+      position: { x: 200, y: 0 },
+      configuration: { path: "qualified", operator: "equals", value: true },
+    });
+    source.nodes[2]!.id = "accepted";
+    source.nodes[2]!.configuration = {
+      method: "POST",
+      url: "https://example.test/accepted",
+    };
+    source.nodes.push({
+      id: "rejected",
+      kind: "output",
+      operation: "output.return",
+      position: { x: 500, y: 160 },
+      configuration: {},
+    });
+    source.edges = [
+      { id: "trigger_to_condition", source: "manual_trigger", target: "qualified" },
+      { id: "accepted_branch", source: "qualified", target: "accepted", condition: "true" },
+      { id: "rejected_branch", source: "qualified", target: "rejected", condition: "false" },
+      { id: "accepted_to_output", source: "accepted", target: "output" },
+    ];
+
+    const result = await executeFlowcordiaWorkflow(
+      source,
+      { qualified: true },
+      createPreviewRuntimeAdapters()
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.traces).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          nodeId: "accepted",
+          status: "SUCCEEDED",
+          output: expect.objectContaining({ input: { qualified: true } }),
+        }),
+        expect.objectContaining({ nodeId: "rejected", status: "SKIPPED" }),
+      ])
+    );
+  });
+
+  it("rejects ambiguous condition branches before execution", () => {
+    const source = workflow();
+    source.nodes.splice(1, 0, {
+      id: "qualified",
+      kind: "control",
+      operation: "control.condition",
+      position: { x: 200, y: 0 },
+      configuration: { path: "qualified", operator: "equals", value: true },
+    });
+    source.edges = [
+      { id: "trigger_to_condition", source: "manual_trigger", target: "qualified" },
+      { id: "condition_to_crm", source: "qualified", target: "crm_request" },
+      { id: "crm_to_output", source: "crm_request", target: "output" },
+    ];
+
+    expect(compileWorkflowToTriggerTask(source)).toMatchObject({
+      success: false,
+      issues: [expect.objectContaining({ nodeId: "qualified", code: "invalid_configuration" })],
+    });
+  });
+
+  it("compiles repository code references relative to the generated artifact", () => {
+    const source = workflow();
+    source.nodes[1] = {
+      id: "qualify",
+      kind: "code",
+      operation: "code.task",
+      position: { x: 280, y: 0 },
+      configuration: {},
+      codeReference: { path: "src/tasks/qualify.ts", exportName: "qualifyLead" },
+    };
+    source.edges[0]!.target = "qualify";
+    source.edges[1]!.source = "qualify";
+
+    const result = compileWorkflowToTriggerTask(source);
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.artifact.source).toContain(
+      'import { qualifyLead as flowcordiaCode0 } from "../../src/tasks/qualify.ts";'
+    );
+  });
+
+  it("rejects executable code-reference injection", () => {
+    const source = workflow();
+    source.nodes[1] = {
+      id: "qualify",
+      kind: "code",
+      operation: "code.task",
+      position: { x: 280, y: 0 },
+      configuration: {},
+      codeReference: { path: "src/tasks/qualify.ts", exportName: "qualifyLead as injected" },
+    };
+    source.edges[0]!.target = "qualify";
+    source.edges[1]!.source = "qualify";
+
+    expect(compileWorkflowToTriggerTask(source)).toMatchObject({
+      success: false,
+      issues: [expect.objectContaining({ nodeId: "qualify", code: "invalid_configuration" })],
+    });
+  });
+
+  it("resolves header-only credentials without exposing them in workflow output", async () => {
+    const source = workflow();
+    source.nodes[1]!.credentialReferences = ["orders-api"];
+    const fetch = vi.fn(async () =>
+      Promise.resolve(new Response('{"accepted":true}', { status: 200 }))
+    );
+
+    const result = await executeFlowcordiaWorkflow(
+      source,
+      { leadId: "lead_123" },
+      createTriggerRuntimeAdapters({
+        fetch,
+        wait: async () => undefined,
+        authorizeHttp: () => true,
+        resolveCredential: async () => ({
+          headers: { authorization: "Bearer runtime-secret" },
+        }),
+      })
+    );
+
+    expect(result.success).toBe(true);
+    expect(fetch).toHaveBeenCalledWith(
+      new URL("https://example.test/leads"),
+      expect.objectContaining({
+        headers: expect.objectContaining({ authorization: "Bearer runtime-secret" }),
+      })
+    );
+    expect(JSON.stringify(result)).not.toContain("runtime-secret");
+  });
+
+  it("binds credential references to deterministic environment names", () => {
+    const source = workflow();
+    source.nodes[1]!.credentialReferences = ["orders-api"];
+
+    const result = compileWorkflowToTriggerTask(source);
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.artifact.source).toContain("FLOWCORDIA_CREDENTIAL_ORDERS_API");
+    expect(result.artifact.source).not.toContain("runtime-secret");
+  });
+
+  it("rejects credential references with colliding environment bindings", () => {
+    const source = workflow();
+    source.nodes[1]!.credentialReferences = ["orders-api", "orders_api"];
+
+    expect(compileWorkflowToTriggerTask(source)).toMatchObject({
+      success: false,
+      issues: [expect.objectContaining({ code: "invalid_configuration" })],
+    });
+  });
+});

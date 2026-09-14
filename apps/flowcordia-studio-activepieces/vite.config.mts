@@ -1,0 +1,89 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import tailwindcss from "@tailwindcss/vite";
+import react from "@vitejs/plugin-react";
+import { defineConfig } from "vite";
+
+const appRoot = fileURLToPath(new URL(".", import.meta.url));
+const repositoryRoot = path.resolve(appRoot, "../..");
+const upstreamRoot = path.join(repositoryRoot, "studio-v2/activepieces-web");
+const packages = path.join(repositoryRoot, "studio-v2/activepieces-core-nodes/packages");
+
+export default defineConfig({
+  root: appRoot,
+  base: "/flowcordia-studio-activepieces/",
+  publicDir: path.join(upstreamRoot, "public"),
+  cacheDir: path.join(repositoryRoot, "node_modules/.vite/flowcordia-studio-activepieces"),
+  plugins: [react(), tailwindcss()],
+  resolve: {
+    dedupe: [
+      "react",
+      "react-dom",
+      "@codemirror/state",
+      "@codemirror/view",
+      "@codemirror/language",
+      "@codemirror/commands",
+    ],
+    alias: [
+      {
+        find: "@/lib/authentication-session",
+        replacement: path.join(appRoot, "src/activepieces-authentication-session.ts"),
+      },
+      {
+        find: "@/lib/api",
+        replacement: path.join(appRoot, "src/activepieces-api.ts"),
+      },
+      { find: "@", replacement: path.join(upstreamRoot, "src") },
+      { find: "@activepieces/shared", replacement: path.join(packages, "core/shared/src") },
+      {
+        find: "@activepieces/core-formula",
+        replacement: path.join(packages, "core/formula/src"),
+      },
+      { find: "@activepieces/core-utils", replacement: path.join(packages, "core/utils/src") },
+      {
+        find: "@activepieces/core-piece-types",
+        replacement: path.join(packages, "core/piece-types/src"),
+      },
+      {
+        find: "@activepieces/core-execution",
+        replacement: path.join(packages, "core/execution/src"),
+      },
+      {
+        find: "@activepieces/pieces-framework",
+        replacement: path.join(packages, "pieces/framework/src/index.ts"),
+      },
+      {
+        find: "@activepieces/piece-ai",
+        replacement: path.join(packages, "pieces/community/ai/src"),
+      },
+      {
+        find: "@flowcordia/workflow",
+        replacement: path.join(appRoot, "src/flowcordia-workflow-browser.ts"),
+      },
+      {
+        find: "@flowcordia/foundation",
+        replacement: path.join(repositoryRoot, "packages/flowcordia-foundation/src/index.ts"),
+      },
+      {
+        find: "ee-embed-sdk",
+        replacement: path.join(appRoot, "src/activepieces-client-events.ts"),
+      },
+    ],
+  },
+  define: {
+    __FLOWCORDIA_ACTIVEPIECES_UPSTREAM_COMMIT__: JSON.stringify(
+      "d1b800f3db6db52379476c069ea3cdbd2c998276"
+    ),
+  },
+  build: {
+    outDir: path.join(appRoot, "dist"),
+    emptyOutDir: true,
+    sourcemap: true,
+    commonjsOptions: { transformMixedEsModules: true },
+  },
+  server: {
+    host: "0.0.0.0",
+    port: 4210,
+    fs: { allow: [repositoryRoot] },
+  },
+});

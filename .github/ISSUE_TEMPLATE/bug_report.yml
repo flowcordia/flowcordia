@@ -1,0 +1,59 @@
+name: Bug report
+description: Report a reproducible Flowcordia problem
+title: "bug: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Search existing issues first. Use synthetic data only.
+        Never include tokens, private keys, credential values, raw logs, or customer data.
+        Report security vulnerabilities privately using SECURITY.md.
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Include the exact application commit or release and image digest, if applicable.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      options:
+        - Installation or first-owner setup
+        - Studio visual editor
+        - TypeScript Source editor
+        - Nodes and integrations
+        - GitHub connection or synchronization
+        - API or MCP
+        - Tests, workers, or deployments
+        - Credentials and environment variables
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Operating system, deployment mode, browser, and relevant runtime versions. No secrets.
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: A minimal synthetic workflow or sequence of steps. A public reproduction repository is optional.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitized diagnostics
+      description: Review any error summary or screenshot for secrets and personal data before sharing.

@@ -1,0 +1,72 @@
+# Validation runbook
+
+## Documentation and schema
+
+1. Validate Markdown links and Mermaid syntax during review.
+2. Validate every JSON document against its declared schema.
+3. Validate `specs/workflow.schema.json` as JSON Schema Draft 2020-12.
+4. Confirm the connection registry reflects every changed component.
+5. Validate `.flowcordia/functions.json` against `packages/flowcordia-workflow/schema/functions-0.1.json` when a repository publishes custom functions.
+
+## Web application foundation
+
+Run from the repository root:
+
+```bash
+pnpm install --frozen-lockfile
+pnpm run typecheck --filter webapp
+pnpm run test --filter webapp -- --run
+pnpm run lint --filter webapp
+```
+
+## Setup-status manual test
+
+1. Start the existing core Docker services.
+2. Start the webapp from the feature branch.
+3. Sign in and open the hidden organization setup URL directly.
+4. Confirm only presence/missing status appears; no secret value may be present in HTML or loader data.
+5. Confirm the general email test is disabled or returns a safe error when configuration is incomplete.
+6. With a test transport, send one message and confirm it targets only the signed-in user.
+7. Confirm unexpected failures are logged server-side and return a generic user-facing message.
+
+## Repository readiness manual test
+
+1. Follow `repository-readiness-rollout.md` in a dedicated connected repository.
+2. Confirm direct access requires Studio feature access and dashboard GitHub read permission.
+3. Confirm the browser sends only the exact bounded `{ "operation": "check" }` command.
+4. Prove the exact GitHub App installation plus contents-write, pull-request-write, and checks-read permissions.
+5. Prove the production branch resolves to one immutable commit and the workflow catalog, durable index, `trigger.config.ts`, generated-task discovery, and preview setting all belong to that exact connected scope.
+6. Inspect the response and HTML for credentials, installation/database IDs, provider request IDs, raw errors, workflow content, configuration source, payloads, outputs, and runtime metadata. None may appear.
+7. Prove permission/configuration gaps render `BLOCKED` and provider uncertainty renders `UNAVAILABLE`; neither may appear ready.
+8. Continue with the authenticated preview-deployment acceptance run. Repository readiness is prerequisite evidence, not execution proof.
+
+## Proposal workspace manual test
+
+1. Follow `proposal-workspace-rollout.md` with the global flag off and one organization override enabled.
+2. Confirm direct routes recheck feature access and GitHub read permission, and command routes recheck GitHub write permission.
+3. Inspect loader and successful command payloads for the documented browser DTO; no internal scope, credential, actor, correlation, version, workflow content, or raw provider error may appear.
+4. Confirm filters reset pagination, each page is at most 50 records, and the selected proposal remains within the loaded page.
+5. Prove `DRAFT -> submit`, `READY -> promote`, and no action for missing head, reconciliation, failure, or terminal states.
+6. Prove a stale expected head and unsatisfied GitHub policy fail without an automatic mutation retry.
+7. Confirm disabling the Studio flag removes navigation and direct access without changing the internal proposal API, worker, deployment, or runtime behavior.
+
+## Proposal governance manual test
+
+1. Follow `proposal-governance-rollout.md` in a dedicated connected repository.
+2. Select a non-first proposal and prove the displayed/evaluated head belongs to that proposal.
+3. Save an initial policy, strengthen it, then prove approval/check/reviewer removal and allowlist expansion return `403` without a version change.
+4. Prove later comments do not replace decisive approvals and dismissed approvals do not count.
+5. Prove pending checks/validation, known blockers, and unavailable evidence render distinct states and all prevent premature promotion.
+6. Prove promotion selects and audits one unchanged policy version/digest, then the proposal service rereads fresh GitHub evidence and sends the exact expected head to merge.
+7. Retry the same bounded request identity and verify audit idempotency; change the policy or payload and verify fail-closed conflict.
+
+## Pull-request acceptance
+
+- Required checks pass on the exact head SHA.
+- Required checks start on GitHub-hosted runners when no Flowcordia runner variables are configured.
+- Optional enterprise runner variables resolve to labels that are online and authorized for the repository.
+- Zizmor completes with console results when `ENABLE_WORKFLOW_SECURITY_SCAN` is unset, ignores informational-only advice, and blocks low-or-higher findings.
+- When `ENABLE_WORKFLOW_SECURITY_SCAN=true`, GitHub Advanced Security is enabled and accepts the SARIF upload.
+- Claude jobs skip unless the GitHub App is installed and `ENABLE_CLAUDE_CODE=true`; manual drift audits also require the installed app.
+- No run-engine, supervisor, queue, database schema, Docker service name, or CLI behavior changed.
+- The PR explains validation limitations when a check could not be executed.

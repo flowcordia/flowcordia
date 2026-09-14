@@ -1,0 +1,115 @@
+/* Existing components consume these tokens, including portaled menus and dialogs. */
+.flowcordia-logo-dark {
+  display: none;
+}
+
+:root[data-appearance="dark"] .flowcordia-logo-light {
+  display: none;
+}
+
+:root[data-appearance="dark"] .flowcordia-logo-dark {
+  display: block;
+}
+
+.flowcordia-error-tree {
+  animation: flowcordia-tree-sway 4s ease-in-out 1;
+  transform-origin: bottom center;
+}
+
+@keyframes flowcordia-tree-sway {
+  0%,
+  100% {
+    transform: translateY(0) rotate(0);
+  }
+  35% {
+    transform: translateY(-6px) rotate(-3deg);
+  }
+  70% {
+    transform: translateY(-3px) rotate(2deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flowcordia-error-tree {
+    animation: none;
+  }
+}
+
+:root {
+  color-scheme: light;
+  --fc-100: 20 20 20;
+  --fc-200: 38 38 38;
+  --fc-300: 70 70 70;
+  --fc-400: 100 100 100;
+  --fc-500: 120 120 120;
+  --fc-550: 165 165 165;
+  --fc-600: 207 207 207;
+  --fc-650: 229 229 229;
+  --fc-700: 231 231 231;
+  --fc-750: 238 238 238;
+  --fc-775: 241 241 241;
+  --fc-800: 247 247 247;
+  --fc-850: 255 255 255;
+  --fc-900: 250 250 250;
+  --fc-950: 250 250 250;
+  --fc-1000: 245 245 245;
+  --fc-primary: 28 28 28;
+  --fc-on-primary: 255 255 255;
+  --fc-workflows: 15 118 110;
+  --fc-runs: 37 99 235;
+  --fc-connections: 194 65 12;
+  --fc-success: 21 128 61;
+  --fc-warning: 161 98 7;
+  --fc-preview: 133 77 14;
+}
+
+:root[data-appearance="dark"] {
+  color-scheme: dark;
+  --fc-100: 245 245 245;
+  --fc-200: 232 232 232;
+  --fc-300: 199 199 199;
+  --fc-400: 166 166 166;
+  --fc-500: 130 130 130;
+  --fc-550: 98 98 98;
+  --fc-600: 74 74 74;
+  --fc-650: 59 59 59;
+  --fc-700: 54 54 54;
+  --fc-750: 48 48 48;
+  --fc-775: 42 42 42;
+  --fc-800: 26 26 26;
+  --fc-850: 33 33 33;
+  --fc-900: 23 23 23;
+  --fc-950: 20 20 20;
+  --fc-1000: 15 15 15;
+  --fc-primary: 240 240 240;
+  --fc-on-primary: 20 20 20;
+  --fc-workflows: 94 234 212;
+  --fc-runs: 147 197 253;
+  --fc-connections: 253 186 116;
+  --fc-success: 134 239 172;
+  --fc-warning: 252 211 77;
+  --fc-preview: 253 224 71;
+}
+
+.flowcordia-navigation [data-action="flowcordia-studio"][aria-current="page"] {
+  background: rgb(var(--fc-workflows) / 0.1);
+  color: rgb(var(--fc-workflows));
+}
+
+.flowcordia-navigation [data-action="runs"][aria-current="page"] {
+  background: rgb(var(--fc-runs) / 0.1);
+  color: rgb(var(--fc-runs));
+}
+
+.flowcordia-navigation [data-action="integrations"][aria-current="page"] {
+  background: rgb(var(--fc-connections) / 0.1);
+  color: rgb(var(--fc-connections));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flowcordia-navigation *,
+  .flowcordia-library * {
+    transition-duration: 0ms !important;
+    animation-duration: 0ms !important;
+  }
+}
