@@ -98,7 +98,11 @@ describe("Flowcordia Activepieces Studio integration", () => {
     expect(api).not.toContain("function currentPlatform()");
     expect(api).not.toContain("function currentProject()");
     expect(host).toContain("configureActivepiecesApiBackend(bootstrap.actionUrl)");
-    expect(route).toContain("handleStudioV2ActivepiecesApi");
+    const handlers = read(
+      "apps/webapp/app/features/flowcordia/workflows/studio-v2/workspace-handlers.server.ts"
+    );
+    expect(route).toContain("dashboardAction(options, commandStudioV2)");
+    expect(handlers).toContain("handleStudioV2ActivepiecesApi");
   });
 
   it("hands Trigger.dev action-test transport to Activepieces' exact test listener", () => {
@@ -133,7 +137,11 @@ describe("Flowcordia Activepieces Studio integration", () => {
     expect(extendedApi).not.toContain("flowcordiaStepRun");
     expect(extendedApi).toContain('environment: "TESTING"');
     expect(extendedApi).toContain("transport: { stepRunResponse }");
-    expect(route).toContain("extended.transport");
+    const handlers = read(
+      "apps/webapp/app/features/flowcordia/workflows/studio-v2/workspace-handlers.server.ts"
+    );
+    expect(route).toContain("dashboardAction(options, commandStudioV2)");
+    expect(handlers).toContain("extended.transport");
   });
 
   it("uses Activepieces' query client with Flowcordia-owned theme persistence", () => {
@@ -163,7 +171,7 @@ describe("Flowcordia Activepieces Studio integration", () => {
 
   it("embeds the Activepieces-only bundle through the authenticated Flowcordia route", () => {
     const parent = read(
-      "apps/webapp/app/features/flowcordia/workflows/studio-v2/StudioV2ActivepiecesHost.tsx"
+      "apps/webapp/app/features/flowcordia/workflows/studio-v2/StudioV2BuilderHost.tsx"
     );
     const route = read(
       "apps/webapp/app/routes/_app.orgs.$organizationSlug.projects.$projectParam.env.$envParam.flowcordia.studio-v2/route.tsx"
@@ -173,7 +181,7 @@ describe("Flowcordia Activepieces Studio integration", () => {
     expect(parent).toContain('sandbox="allow-forms allow-same-origin allow-scripts"');
     expect(parent).not.toContain("useFetcher");
     expect(parent).not.toContain(">Test<");
-    expect(route).toContain("StudioV2ActivepiecesHost");
+    expect(route).toContain("StudioV2BuilderHost");
     expect(route).not.toContain("StudioV2ReleaseControls");
     expect(route).not.toContain("<NavBar>");
   });

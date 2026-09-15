@@ -99,7 +99,7 @@ jobs:
           pull redis:7.2
           pull testcontainers/ryuk:0.14.0
           pull electricsql/electric:1.2.4
-          pull minio/minio:latest
+          pull quay.io/minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
           echo "Image pre-pull complete"
 
       - name: 📥 Download deps
