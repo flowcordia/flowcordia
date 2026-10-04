@@ -31,6 +31,10 @@ const HTTP_PIECE_VERSION = "0.11.13";
 const HTTP_ACTION = "send_request";
 const DELAY_PIECE = "@activepieces/piece-delay";
 const DELAY_PIECE_VERSION = "0.3.30";
+const SCHEDULE_PIECE = "@activepieces/piece-schedule";
+const SCHEDULE_PIECE_VERSION = "0.1.20";
+const WEBHOOK_PIECE = "@activepieces/piece-webhook";
+const WEBHOOK_PIECE_VERSION = "0.1.38";
 
 type ConditionValue = {
   firstValue?: unknown;
@@ -145,7 +149,24 @@ function commonStep(node: WorkflowNode, now: string) {
 }
 
 function toManualTrigger(node: WorkflowNode, now: string): FlowTrigger {
-  if (node.operation !== "trigger.manual") {
+  if (node.operation === "trigger.schedule" || node.operation === "trigger.webhook") {
+    const schedule = node.operation === "trigger.schedule";
+    return {
+      ...commonStep(node, now),
+      type: FlowTriggerType.PIECE,
+      settings: {
+        pieceName: schedule ? SCHEDULE_PIECE : WEBHOOK_PIECE,
+        pieceVersion: schedule ? SCHEDULE_PIECE_VERSION : WEBHOOK_PIECE_VERSION,
+        triggerName: schedule ? "cron_expression" : "catch_webhook",
+        input: schedule
+          ? { cronExpression: node.configuration.cron, timezone: node.configuration.timezone }
+          : { authType: "none" },
+        propertySettings: {},
+        customLogoUrl: undefined,
+      },
+    };
+  }
+  if (node.operation !== "trigger.manual" && node.operation !== "trigger.api") {
     throw new FlowcordiaActivepiecesBridgeError(
       "unsupported_operation",
       `Trigger operation ${node.operation} is not mapped to Activepieces yet.`
@@ -178,6 +199,30 @@ function toSourceAction(node: WorkflowNode, now: string): FlowAction {
     type: FlowActionType.CODE,
     settings: {
       sourceCode: { packageJson: "{}", code: source },
+      input: {},
+      errorHandlingOptions: undefined,
+    },
+  };
+}
+
+function mappingSource(node: WorkflowNode): string {
+  return `import { parseFlowcordiaMappingConfiguration, applyFlowcordiaMapping } from "@flowcordia/workflow";
+
+export default async function run(ctx: FlowcordiaContext) {
+  const parsed = parseFlowcordiaMappingConfiguration(${JSON.stringify(node.configuration, null, 2)});
+  if (!parsed.success) throw new Error(parsed.issues[0]?.message ?? "Invalid mapping");
+  const result = applyFlowcordiaMapping(parsed.configuration, ctx.input);
+  if (!result.success) throw new Error(result.message);
+  return result.value;
+}`;
+}
+
+function toMappingAction(node: WorkflowNode, now: string): FlowAction {
+  return {
+    ...commonStep(node, now),
+    type: FlowActionType.CODE,
+    settings: {
+      sourceCode: { packageJson: "{}", code: mappingSource(node) },
       input: {},
       errorHandlingOptions: undefined,
     },
@@ -354,18 +399,20 @@ export function flowcordiaWorkflowToActivepieces({
     const action =
       node.operation === "code.typescript"
         ? toSourceAction(node, now)
-        : node.operation === "action.http"
-          ? toHttpAction(node, now)
-          : node.operation === "control.wait"
-            ? toWaitAction(node, now)
-            : node.operation === "control.loop"
-              ? toLoopAction(node, now, projectId)
-              : (() => {
-                  throw new FlowcordiaActivepiecesBridgeError(
-                    "unsupported_operation",
-                    `Node operation ${node.operation} is not mapped to Activepieces yet.`
-                  );
-                })();
+        : node.operation === "data.map"
+          ? toMappingAction(node, now)
+          : node.operation === "action.http"
+            ? toHttpAction(node, now)
+            : node.operation === "control.wait"
+              ? toWaitAction(node, now)
+              : node.operation === "control.loop"
+                ? toLoopAction(node, now, projectId)
+                : (() => {
+                    throw new FlowcordiaActivepiecesBridgeError(
+                      "unsupported_operation",
+                      `Node operation ${node.operation} is not mapped to Activepieces yet.`
+                    );
+                  })();
     const next = edges[0] ? build(edges[0].target) : undefined;
     if (next) action.nextAction = next;
     return action;
@@ -450,6 +497,30 @@ function fromStep(
       };
 
   if (step.type === FlowTriggerType.PIECE && "triggerName" in step.settings) {
+    if (
+      step.settings.pieceName === SCHEDULE_PIECE &&
+      step.settings.triggerName === "cron_expression"
+    ) {
+      const input = asJsonObject(step.settings.input);
+      return {
+        ...base,
+        kind: "trigger",
+        operation: "trigger.schedule",
+        configuration: {
+          ...(original?.configuration ?? {}),
+          cron: input.cronExpression ?? "",
+          timezone: input.timezone ?? "UTC",
+        },
+      };
+    }
+    if (step.settings.pieceName === WEBHOOK_PIECE && original?.operation === "trigger.webhook") {
+      return {
+        ...base,
+        kind: "trigger",
+        operation: "trigger.webhook",
+        configuration: clone(original.configuration),
+      };
+    }
     if (step.settings.pieceName !== MANUAL_TRIGGER_PIECE) {
       throw new FlowcordiaActivepiecesBridgeError(
         "unsupported_activepieces_step",
@@ -459,17 +530,31 @@ function fromStep(
     return {
       ...base,
       kind: "trigger",
-      operation: "trigger.manual",
+      operation: original?.operation === "trigger.api" ? "trigger.api" : "trigger.manual",
       configuration: original?.configuration ?? {},
     };
   }
 
   if (step.type === FlowActionType.CODE) {
+    // Preserve native mapping semantics until the generated code is explicitly edited.
+    if (
+      original?.operation === "data.map" &&
+      step.settings.sourceCode.code === mappingSource(original)
+    ) {
+      return {
+        ...base,
+        kind: original.kind,
+        operation: original.operation,
+        configuration: clone(original.configuration),
+      };
+    }
     const credentialReferences = original?.credentialReferences ?? [];
     return {
       ...base,
       kind: "code",
       operation: "code.typescript",
+      inputSchema: original?.inputSchema ?? { type: "object" },
+      outputSchema: original?.outputSchema ?? { type: "object" },
       configuration: {
         ...(original?.configuration ?? {}),
         language: "typescript",

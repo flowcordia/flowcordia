@@ -181,10 +181,22 @@ function restoreGenericSteps(flow: PopulatedFlow, generic: Map<string, GenericPi
 function sanitizeGenericPieces(flow: PopulatedFlow) {
   const sanitized = clone(flow);
   const generic = new Map<string, GenericPieceStep>();
+  const original = sidecarWorkflow(flow);
 
   walkSteps(sanitized.version.trigger, (step) => {
     if (step.type === FlowTriggerType.PIECE && "triggerName" in step.settings) {
       if (step.settings.pieceName === MANUAL_TRIGGER_PIECE) return;
+      const node = findWorkflowNode(original, step.name);
+      if (
+        (node?.operation === "trigger.schedule" &&
+          step.settings.pieceName === "@activepieces/piece-schedule" &&
+          step.settings.triggerName === "cron_expression") ||
+        (node?.operation === "trigger.webhook" &&
+          step.settings.pieceName === "@activepieces/piece-webhook" &&
+          step.settings.triggerName === "catch_webhook" &&
+          step.settings.input.authType === "none")
+      )
+        return;
       generic.set(step.name, {
         stepType: "trigger",
         settings: asJsonObject(step.settings),

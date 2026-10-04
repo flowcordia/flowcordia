@@ -579,7 +579,7 @@ export const flowcordiaStudioActivepiecesInteraction = task({
 
 function shouldCopyPackagePath(source: string): boolean {
   const normalized = source.replaceAll("\\", "/");
-  return !["/node_modules/", "/dist/", "/.turbo/", "/coverage/", "/.git/"].some((segment) =>
+  return !["/node_modules/", "/.turbo/", "/coverage/", "/.git/"].some((segment) =>
     normalized.includes(segment)
   );
 }
@@ -640,6 +640,7 @@ export async function createStudioV2ActivepiecesInteractionContext(input: {
   await assertReadableFile(join(root, ".configs", "tsconfig.base.json"));
   for (const packageDirectory of FLOWCORDIA_PACKAGE_DIRECTORIES) {
     await assertReadableFile(join(root, packageDirectory, "package.json"));
+    await assertReadableFile(join(root, packageDirectory, "dist", "src", "index.js"));
   }
   await assertReadableFile(join(root, "studio-v2", "activepieces-catalog", "manifest.json"));
 

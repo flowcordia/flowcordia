@@ -171,4 +171,14 @@ describe("Studio V2 Activepieces interaction context", () => {
     expect(source).toContain("Buffer.byteLength");
     expect(source).toContain("archive.size > MAX_DEPLOYMENT_CONTEXT_BYTES");
   });
+
+  it("includes compiled workspace entrypoints needed by the deployment bundler", () => {
+    expect(source).toContain('join(root, packageDirectory, "dist", "src", "index.js")');
+    const copyFilter = source.slice(
+      source.indexOf("function shouldCopyPackagePath"),
+      source.indexOf("async function assertReadableFile")
+    );
+    expect(copyFilter).not.toContain('"/dist/"');
+    expect(copyFilter).toContain('"/node_modules/"');
+  });
 });

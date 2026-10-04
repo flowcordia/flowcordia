@@ -17,6 +17,7 @@ export const STUDIO_V2_WORKSPACE_KEY_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
 
 const STUDIO_V2_ALLOWED_OPERATIONS = new Set([
   ...STUDIO_V2_FOUNDATION_NODES.map((entry) => entry.operation),
+  "trigger.api",
   FLOWCORDIA_ACTIVEPIECES_ACTION_OPERATION,
   FLOWCORDIA_ACTIVEPIECES_TRIGGER_OPERATION,
   "output.return",

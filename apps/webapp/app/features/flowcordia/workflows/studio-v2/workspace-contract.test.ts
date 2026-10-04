@@ -16,6 +16,20 @@ describe("Studio V2 local workspace contract", () => {
     expect(result).toMatchObject({ success: true, issues: [] });
   });
 
+  it("accepts the native API trigger already supported by the execution runtime", () => {
+    const workflow = verticalSlice();
+    workflow.nodes[0]!.operation = "trigger.api";
+    workflow.nodes[0]!.configuration = {
+      requireIdempotencyKey: true,
+      idempotencyKeyTTLSeconds: 86400,
+      queueTTLSeconds: 3600,
+    };
+    expect(validateStudioV2WorkspaceDocument(workflow)).toMatchObject({
+      success: true,
+      issues: [],
+    });
+  });
+
   it("rejects operations outside the owned Studio V2 catalog", () => {
     const workflow = verticalSlice();
     workflow.nodes[1]!.operation = "developer.unowned";
