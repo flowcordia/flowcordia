@@ -32,6 +32,40 @@ function persisted<T>(value: T): T {
 
 describe("Flowcordia generic Activepieces piece bridge", () => {
   it.each([
+    [
+      "trigger.api",
+      { requireIdempotencyKey: true, idempotencyKeyTTLSeconds: 86400, queueTTLSeconds: 3600 },
+    ],
+    ["trigger.schedule", { cron: "0 9 * * 1-5", timezone: "Asia/Karachi" }],
+    ["trigger.webhook", { method: "POST", path: "/incoming" }],
+  ] as const)(
+    "preserves native %s configuration through the builder",
+    (operation, configuration) => {
+      const workflow = createStudioV2VerticalSliceWorkflow();
+      workflow.nodes[0]!.operation = operation;
+      workflow.nodes[0]!.configuration = { ...configuration };
+      const flow = flowcordiaWorkflowToActivepieces({ workflow, projectId: "project_test" });
+      expect(persisted(activepiecesFlowToFlowcordia(flow))).toEqual(persisted(workflow));
+    }
+  );
+
+  it("saves edited cron and timezone back to the native schedule", () => {
+    const workflow = createStudioV2VerticalSliceWorkflow();
+    workflow.nodes[0]!.operation = "trigger.schedule";
+    workflow.nodes[0]!.configuration = { cron: "0 9 * * 1-5", timezone: "UTC" };
+    const flow = flowcordiaWorkflowToActivepieces({ workflow, projectId: "project_test" });
+    if (flow.version.trigger.type !== FlowTriggerType.PIECE)
+      throw new Error("Expected a piece trigger");
+    flow.version.trigger.settings.input = {
+      cronExpression: "30 10 * * *",
+      timezone: "Asia/Karachi",
+    };
+    expect(activepiecesFlowToFlowcordia(flow).nodes[0]!.configuration).toEqual({
+      cron: "30 10 * * *",
+      timezone: "Asia/Karachi",
+    });
+  });
+  it.each([
     ["math", "@activepieces/piece-math-helper", "addition_math"],
     ["text", "@activepieces/piece-text-helper", "replace"],
     ["date", "@activepieces/piece-date-helper", "get_current_date"],

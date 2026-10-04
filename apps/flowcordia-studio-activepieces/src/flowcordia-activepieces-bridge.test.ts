@@ -33,6 +33,25 @@ function persisted<T>(value: T): T {
 }
 
 describe("Flowcordia Activepieces bridge", () => {
+  it("opens native mapping nodes and preserves required paths and merge semantics", () => {
+    const workflow = createStudioV2VerticalSliceWorkflow();
+    workflow.nodes[1]!.operation = "data.map";
+    workflow.nodes[1]!.kind = "control";
+    workflow.nodes[1]!.configuration = {
+      mode: "merge",
+      entries: [{ target: "request.id", source: "requestId", required: true }],
+    };
+    const flow = flowcordiaWorkflowToActivepieces({ workflow, projectId: "project_test" });
+    expect(persisted(activepiecesFlowToFlowcordia(flow))).toEqual(persisted(workflow));
+    const step = findStep(flow.version.trigger, "source");
+    if (step?.type !== FlowActionType.CODE) throw new Error("Expected mapping code");
+    expect(step.settings.sourceCode.code).toContain("applyFlowcordiaMapping");
+    step.settings.sourceCode.code =
+      "export default async function run(ctx: FlowcordiaContext) { return ctx.input; }";
+    const edited = activepiecesFlowToFlowcordia(flow).nodes.find((n) => n.id === "source")!;
+    expect(edited.operation).toBe("code.typescript");
+    expect(edited.configuration.source).toBe(step.settings.sourceCode.code);
+  });
   it("creates an actual Activepieces flow and round-trips the persisted canonical workflow", () => {
     const workflow = createStudioV2VerticalSliceWorkflow();
     const flow = flowcordiaWorkflowToActivepieces({
@@ -94,6 +113,8 @@ describe("Flowcordia Activepieces bridge", () => {
       kind: "code",
       operation: "code.typescript",
       credentialReferences: [],
+      inputSchema: { type: "object" },
+      outputSchema: { type: "object" },
       configuration: {
         language: "typescript",
         entrypoint: "run",
